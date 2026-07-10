@@ -33,7 +33,6 @@ export function createWorkerConfig(
 
       logger.info(`Job started — metadata keys: ${Object.keys(metadata).join(', ')}`);
 
-      // Console/daemon mode uses a fake job — use job room name, skip SIP, inject test data
       const isLocalTest = ctx.isFakeJob;
       const effectiveMetadata = isLocalTest && Object.keys(metadata).length === 0
         ? getConsoleTestMetadata()
@@ -56,7 +55,8 @@ export function createWorkerConfig(
 
       const agent = agentFactory(effectiveMetadata);
       const pipeline = new SarvamPipelineFactory(settings);
-      const bundle = pipeline.createPipelineBundle(undefined, isOutboundCall);
+      // 24kHz PCM TTS — mulaw 8kHz was causing silent/hung playouts on PSTN
+      const bundle = pipeline.createPipelineBundle(undefined, false);
 
       const session = new voice.AgentSession({
         stt: bundle.stt,
@@ -65,7 +65,7 @@ export function createWorkerConfig(
         vad: null,
         turnHandling: {
           turnDetection: 'stt',
-          endpointing: { minDelay: isOutboundCall ? 450 : 70 },
+          endpointing: { minDelay: isOutboundCall ? 600 : 70 },
           preemptiveGeneration: { enabled: !isOutboundCall },
           interruption: {
             enabled: !isOutboundCall,
@@ -74,28 +74,9 @@ export function createWorkerConfig(
         },
       });
 
-      // Outbound: dial and wait for mic BEFORE starting STT — avoids ring/line noise
-      // polluting turn detection and adding ~20s lag before the first reply.
-      if (isOutboundCall && phoneNumber && settings.sipOutboundTrunkId) {
-        try {
-          await placeOutboundCall(
-            settings,
-            roomName,
-            metadata,
-            phoneNumber,
-            participantIdentity,
-            logger,
-          );
-          await waitForParticipantMicrophone(ctx.room, participantIdentity, logger);
-        } catch (error) {
-          logger.error(`Outbound call setup failed: ${error}`);
-          ctx.shutdown();
-          return;
-        }
-      } else if (!isLocalTest && phoneNumber) {
-        logger.warn('phone_number provided but SIP_OUTBOUND_TRUNK_ID is not configured');
-      }
+      attachSessionDebugLogging(session, logger, isOutboundCall);
 
+      // Join room and publish agent audio BEFORE dialing so SIP can subscribe immediately
       await session.start({
         agent,
         room: ctx.room,
@@ -108,11 +89,26 @@ export function createWorkerConfig(
         record: { audio: true, traces: false, logs: false, transcript: false },
       });
 
-      if (isOutboundCall && phoneNumber && settings.sipOutboundTrunkId) {
-        session._roomIO?.setParticipant(participantIdentity);
+      if (!isLocalTest && phoneNumber && settings.sipOutboundTrunkId) {
+        try {
+          await placeOutboundCall(
+            settings,
+            roomName,
+            metadata,
+            phoneNumber,
+            participantIdentity,
+            logger,
+          );
+          await waitForParticipantMicrophone(ctx.room, participantIdentity, logger);
+          session._roomIO?.setParticipant(participantIdentity);
+        } catch (error) {
+          logger.error(`Outbound call setup failed: ${error}`);
+          ctx.shutdown();
+          return;
+        }
+      } else if (!isLocalTest && phoneNumber) {
+        logger.warn('phone_number provided but SIP_OUTBOUND_TRUNK_ID is not configured');
       }
-
-      attachSessionDebugLogging(session, logger, isOutboundCall);
 
       await new Promise<void>((resolve) => {
         session.on(voice.AgentSessionEventTypes.Close, () => {
@@ -131,7 +127,6 @@ export function createWorkerConfig(
   };
 }
 
-/** Log transcripts and commit turns when Sarvam omits END_SPEECH (common on short Hindi replies). */
 function attachSessionDebugLogging(
   session: voice.AgentSession,
   logger: ReturnType<typeof log>,
@@ -146,6 +141,9 @@ function attachSessionDebugLogging(
       turnCommitTimer = undefined;
     }
   };
+
+  const canCommitUserTurn = () =>
+    agentState !== 'thinking' && agentState !== 'speaking';
 
   session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
     agentState = ev.newState;
@@ -188,16 +186,14 @@ function attachSessionDebugLogging(
       return;
     }
 
-    // Sarvam often sends FINAL_TRANSCRIPT without END_SPEECH, so LiveKit never
-    // commits the user turn and the agent stops replying after the first exchange.
     clearTurnCommitTimer();
     turnCommitTimer = setTimeout(() => {
       turnCommitTimer = undefined;
-      if (agentState === 'listening' || agentState === 'idle') {
+      if (canCommitUserTurn()) {
         logger.info({ transcript: ev.transcript }, 'Committing user turn (Sarvam END_SPEECH fallback)');
         session.commitUserTurn();
       }
-    }, 1200);
+    }, 900);
   });
 }
 
@@ -211,7 +207,6 @@ function parseMetadata(raw: string): CallMetadata {
   }
 }
 
-/** Dummy property data for lk agent console / daemon local testing */
 function getConsoleTestMetadata(): CallMetadata {
   return {
     job_id: 'console-test-job',
@@ -227,7 +222,6 @@ function getConsoleTestMetadata(): CallMetadata {
   };
 }
 
-/** SIP participants often join before their mic track is published — wait and subscribe explicitly */
 async function waitForParticipantMicrophone(
   room: Room,
   participantIdentity: string,

@@ -37,7 +37,7 @@ RULES:
 - "Hello", "hi", "namaste", and similar greetings are NOT goodbye — continue the conversation.
 - Ask ONE question at a time. Do not rush.
 - Use recordPropertyAvailability as soon as the owner answers the availability question.
-- If property IS available: immediately ask whether ${params.companyName} should help find tenants.
+- If property IS available: after recording, ask whether ${params.companyName} should help find tenants.
   Do NOT call endCallWithSummary until the tenant question is answered.
 - Use recordTenantSourcingIntent as soon as the owner answers the tenant question.
 - Only call endCallWithSummary after BOTH questions are answered, or the owner clearly declines,
