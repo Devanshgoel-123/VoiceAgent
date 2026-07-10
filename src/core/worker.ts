@@ -56,7 +56,7 @@ export function createWorkerConfig(
 
       const agent = agentFactory(effectiveMetadata);
       const pipeline = new SarvamPipelineFactory(settings);
-      const bundle = pipeline.createPipelineBundle(undefined, false);
+      const bundle = pipeline.createPipelineBundle(undefined, isOutboundCall);
 
       const session = new voice.AgentSession({
         stt: bundle.stt,
@@ -65,7 +65,7 @@ export function createWorkerConfig(
         vad: null,
         turnHandling: {
           turnDetection: 'stt',
-          endpointing: { minDelay: isOutboundCall ? 600 : 70 },
+          endpointing: { minDelay: isOutboundCall ? 450 : 70 },
           preemptiveGeneration: { enabled: !isOutboundCall },
           interruption: {
             enabled: !isOutboundCall,
@@ -74,19 +74,9 @@ export function createWorkerConfig(
         },
       });
 
-      await session.start({
-        agent,
-        room: ctx.room,
-        inputOptions: isOutboundCall
-          ? { participantIdentity, closeOnDisconnect: false }
-          : undefined,
-        outputOptions: isOutboundCall
-          ? { syncTranscription: false }
-          : undefined,
-        record: { audio: true},
-      });
-
-      if (!isLocalTest && phoneNumber && settings.sipOutboundTrunkId) {
+      // Outbound: dial and wait for mic BEFORE starting STT — avoids ring/line noise
+      // polluting turn detection and adding ~20s lag before the first reply.
+      if (isOutboundCall && phoneNumber && settings.sipOutboundTrunkId) {
         try {
           await placeOutboundCall(
             settings,
@@ -97,7 +87,6 @@ export function createWorkerConfig(
             logger,
           );
           await waitForParticipantMicrophone(ctx.room, participantIdentity, logger);
-          session._roomIO?.setParticipant(participantIdentity);
         } catch (error) {
           logger.error(`Outbound call setup failed: ${error}`);
           ctx.shutdown();
@@ -106,23 +95,110 @@ export function createWorkerConfig(
       } else if (!isLocalTest && phoneNumber) {
         logger.warn('phone_number provided but SIP_OUTBOUND_TRUNK_ID is not configured');
       }
-      session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
-        logger.info(
-          { transcript: ev.transcript, isFinal: ev.isFinal },
-          'User said',
-        );
+
+      await session.start({
+        agent,
+        room: ctx.room,
+        inputOptions: isOutboundCall
+          ? { participantIdentity, closeOnDisconnect: false }
+          : undefined,
+        outputOptions: isOutboundCall
+          ? { syncTranscription: false }
+          : undefined,
+        record: { audio: true, traces: false, logs: false, transcript: false },
       });
+
+      if (isOutboundCall && phoneNumber && settings.sipOutboundTrunkId) {
+        session._roomIO?.setParticipant(participantIdentity);
+      }
+
+      attachSessionDebugLogging(session, logger, isOutboundCall);
+
       await new Promise<void>((resolve) => {
-        session.on(voice.AgentSessionEventTypes.Close, () =>{
-          const report = ctx.makeSessionReport(session);
-           if (report.audioRecordingPath) {
-            logger.info(`Call audio saved: ${report.audioRecordingPath}`);
-              resolve();
-             }
+        session.on(voice.AgentSessionEventTypes.Close, () => {
+          try {
+            const report = ctx.makeSessionReport(session);
+            if (report.audioRecordingPath) {
+              logger.info(`Call audio saved: ${report.audioRecordingPath}`);
+            }
+          } catch (error) {
+            logger.warn(`Could not create session report: ${error}`);
+          }
+          resolve();
         });
       });
     },
   };
+}
+
+/** Log transcripts and commit turns when Sarvam omits END_SPEECH (common on short Hindi replies). */
+function attachSessionDebugLogging(
+  session: voice.AgentSession,
+  logger: ReturnType<typeof log>,
+  isOutboundCall: boolean,
+): void {
+  let agentState: voice.AgentState = 'initializing';
+  let turnCommitTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const clearTurnCommitTimer = () => {
+    if (turnCommitTimer) {
+      clearTimeout(turnCommitTimer);
+      turnCommitTimer = undefined;
+    }
+  };
+
+  session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
+    agentState = ev.newState;
+    logger.info({ oldState: ev.oldState, newState: ev.newState }, 'Agent state');
+    if (ev.newState === 'thinking' || ev.newState === 'speaking') {
+      clearTurnCommitTimer();
+    }
+  });
+
+  session.on(voice.AgentSessionEventTypes.SpeechCreated, (ev) => {
+    logger.info({ speechId: ev.speechHandle.id, source: ev.source }, 'Agent speaking');
+  });
+
+  session.on(voice.AgentSessionEventTypes.FunctionToolsExecuted, (ev) => {
+    for (let i = 0; i < ev.functionCalls.length; i++) {
+      const call = ev.functionCalls[i];
+      const output = ev.functionCallOutputs[i];
+      logger.info(
+        {
+          tool: call?.name,
+          output: output?.output?.slice(0, 200),
+          isError: output?.isError,
+        },
+        'Tool finished',
+      );
+    }
+  });
+
+  session.on(voice.AgentSessionEventTypes.Error, (ev) => {
+    logger.error({ error: ev.error }, 'Session error');
+  });
+
+  session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
+    logger.info(
+      { transcript: ev.transcript, isFinal: ev.isFinal },
+      'User said',
+    );
+
+    if (!isOutboundCall || !ev.isFinal || !ev.transcript.trim()) {
+      return;
+    }
+
+    // Sarvam often sends FINAL_TRANSCRIPT without END_SPEECH, so LiveKit never
+    // commits the user turn and the agent stops replying after the first exchange.
+    clearTurnCommitTimer();
+    turnCommitTimer = setTimeout(() => {
+      turnCommitTimer = undefined;
+      if (agentState === 'listening' || agentState === 'idle') {
+        logger.info({ transcript: ev.transcript }, 'Committing user turn (Sarvam END_SPEECH fallback)');
+        session.commitUserTurn();
+      }
+    }, 1200);
+  });
 }
 
 function parseMetadata(raw: string): CallMetadata {

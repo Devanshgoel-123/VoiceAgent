@@ -79,7 +79,9 @@ class PropertyAvailabilityAgent extends voice.Agent {
 function buildPropertyTools(state: AgentState) {
   return {
     recordPropertyAvailability: llm.tool({
-      description: 'Record whether the property is still available for rent.',
+      description:
+        'Call when the owner answers whether the property is still available for rent. ' +
+        'If available, you must still ask the tenant-sourcing question before ending the call.',
       parameters: z.object({
         isAvailable: z.boolean().describe('True if owner confirmed property is available'),
         ownerResponse: z.string().describe('Exact words the owner used'),
@@ -89,16 +91,29 @@ function buildPropertyTools(state: AgentState) {
         log().info(
           `Job ${state.jobId} — property available: ${state.propertyAvailable} (owner said: ${ownerResponse})`,
         );
-        return `Recorded: property available = ${isAvailable}`;
+
+        if (isAvailable) {
+          return (
+            `Availability recorded. Acknowledge briefly, then ask whether ${state.companyName} ` +
+            `should help find tenants for the property. Do NOT call endCallWithSummary yet.`
+          );
+        }
+
+        return (
+          `Availability recorded as unavailable. Thank the owner politely, ` +
+          `then call endCallWithSummary.`
+        );
       },
     }),
 
     recordTenantSourcingIntent: llm.tool({
-      description: 'Record whether the owner wants Gullynest to find tenants.',
+      description:
+        `Record whether the owner wants ${state.companyName} to find tenants. ` +
+        'Call only after the tenant-sourcing question is answered.',
       parameters: z.object({
         wantsGullynestHelp: z
           .boolean()
-          .describe('True if owner wants Gullynest to find tenants'),
+          .describe(`True if owner wants ${state.companyName} to find tenants`),
         ownerResponse: z.string().describe('Exact words the owner used'),
       }),
       execute: async ({ wantsGullynestHelp, ownerResponse }) => {
@@ -106,17 +121,32 @@ function buildPropertyTools(state: AgentState) {
         log().info(
           `Job ${state.jobId} — find tenants: ${state.findTenants} (owner said: ${ownerResponse})`,
         );
-        return `Recorded: Gullynest tenant help = ${wantsGullynestHelp}`;
+        return (
+          `Tenant intent recorded. Call endCallWithSummary now, then thank the owner ` +
+          `and say goodbye in their language.`
+        );
       },
     }),
 
     endCallWithSummary: llm.tool({
       description:
-        'End the call after both questions are answered. Saves results and says goodbye.',
+        'End the call and save results. Only after both questions are answered, ' +
+        'or the owner declines / is unavailable / too busy.',
       parameters: z.object({
         summary: z.string().describe('Brief summary of the conversation outcome'),
       }),
       execute: async ({ summary }) => {
+        if (state.propertyAvailable === 'not_asked') {
+          return 'Cannot end yet — ask whether the property is still available first.';
+        }
+
+        if (state.propertyAvailable === 'yes' && state.findTenants === 'not_asked') {
+          return (
+            `Cannot end yet — ask whether ${state.companyName} should help find tenants, ` +
+            `wait for the answer, call recordTenantSourcingIntent, then end the call.`
+          );
+        }
+
         const result = buildCallResult({
           jobId: state.jobId,
           propertyAvailable: state.propertyAvailable,
@@ -129,10 +159,7 @@ function buildPropertyTools(state: AgentState) {
         await state.resultStore.save(result);
         log().info(`Call completed — job ${state.jobId} summary: ${summary}`);
 
-        return (
-          `Results saved. Thank the owner briefly and say goodbye in their language. ` +
-          `Summary: ${summary}`
-        );
+        return `Results saved. Say a brief goodbye now. Summary: ${summary}`;
       },
     }),
 
