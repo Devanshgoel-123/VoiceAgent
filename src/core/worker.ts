@@ -1,4 +1,13 @@
-import { type JobContext, log, voice } from '@livekit/agents';
+import { AutoSubscribe, type JobContext, log, voice } from '@livekit/agents';
+import {
+  RoomEvent,
+  TrackSource,
+  type RemoteParticipant,
+  type RemoteTrack,
+  type RemoteTrackPublication,
+  type Room,
+} from '@livekit/rtc-node';
+
 import { SipClient } from 'livekit-server-sdk';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
@@ -16,8 +25,6 @@ export function createWorkerConfig(
   agentFactory: AgentFactory,
   options: { telephony?: boolean; settings?: Settings } = {},
 ): WorkerConfig {
-  const telephony = options.telephony ?? true;
-
   return {
     entry: async (ctx: JobContext) => {
       const settings = options.settings ?? getSettings();
@@ -41,6 +48,43 @@ export function createWorkerConfig(
 
       const phoneNumber = effectiveMetadata.phone_number as string | undefined;
       const participantIdentity = `owner-${effectiveMetadata.property_id ?? 'unknown'}`;
+      const isOutboundCall = !isLocalTest && !!phoneNumber;
+
+      if (isOutboundCall) {
+        await ctx.connect(undefined, AutoSubscribe.AUDIO_ONLY);
+      }
+
+      const agent = agentFactory(effectiveMetadata);
+      const pipeline = new SarvamPipelineFactory(settings);
+      const bundle = pipeline.createPipelineBundle(undefined, false);
+
+      const session = new voice.AgentSession({
+        stt: bundle.stt,
+        llm: bundle.llm,
+        tts: bundle.tts,
+        vad: null,
+        turnHandling: {
+          turnDetection: 'stt',
+          endpointing: { minDelay: isOutboundCall ? 600 : 70 },
+          preemptiveGeneration: { enabled: !isOutboundCall },
+          interruption: {
+            enabled: !isOutboundCall,
+            discardAudioIfUninterruptible: isOutboundCall,
+          },
+        },
+      });
+
+      await session.start({
+        agent,
+        room: ctx.room,
+        inputOptions: isOutboundCall
+          ? { participantIdentity, closeOnDisconnect: false }
+          : undefined,
+        outputOptions: isOutboundCall
+          ? { syncTranscription: false }
+          : undefined,
+        record: { audio: true},
+      });
 
       if (!isLocalTest && phoneNumber && settings.sipOutboundTrunkId) {
         try {
@@ -52,38 +96,31 @@ export function createWorkerConfig(
             participantIdentity,
             logger,
           );
-        } catch {
+          await waitForParticipantMicrophone(ctx.room, participantIdentity, logger);
+          session._roomIO?.setParticipant(participantIdentity);
+        } catch (error) {
+          logger.error(`Outbound call setup failed: ${error}`);
           ctx.shutdown();
           return;
         }
       } else if (!isLocalTest && phoneNumber) {
         logger.warn('phone_number provided but SIP_OUTBOUND_TRUNK_ID is not configured');
       }
-
-      const agent = agentFactory(effectiveMetadata);
-      const pipeline = new SarvamPipelineFactory(settings);
-      // PSTN uses mulaw 8kHz; local console/daemon needs normal PCM for laptop speakers
-      const useTelephonyAudio = telephony && !isLocalTest;
-      const bundle = pipeline.createPipelineBundle(undefined, useTelephonyAudio);
-
-      const session = new voice.AgentSession({
-        stt: bundle.stt,
-        llm: bundle.llm,
-        tts: bundle.tts,
-        // Sarvam docs: use STT speech-boundary signals, not bundled Silero VAD
-        vad: null,
-        turnHandling: {
-          turnDetection: 'stt',
-          endpointing: { minDelay: 70 },
-          preemptiveGeneration: { enabled: true },
-        },
+      session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
+        logger.info(
+          { transcript: ev.transcript, isFinal: ev.isFinal },
+          'User said',
+        );
       });
-
-      await session.start({ agent, room: ctx.room });
-
-      if (!isLocalTest && phoneNumber && session._roomIO) {
-        session._roomIO.setParticipant(participantIdentity);
-      }
+      await new Promise<void>((resolve) => {
+        session.on(voice.AgentSessionEventTypes.Close, () =>{
+          const report = ctx.makeSessionReport(session);
+           if (report.audioRecordingPath) {
+            logger.info(`Call audio saved: ${report.audioRecordingPath}`);
+              resolve();
+             }
+        });
+      });
     },
   };
 }
@@ -112,6 +149,80 @@ function getConsoleTestMetadata(): CallMetadata {
     city: 'Bangalore',
     company_name: 'Gullynest',
   };
+}
+
+/** SIP participants often join before their mic track is published — wait and subscribe explicitly */
+async function waitForParticipantMicrophone(
+  room: Room,
+  participantIdentity: string,
+  logger: ReturnType<typeof log>,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const hasMicTrack = (participant: RemoteParticipant): boolean => {
+    for (const publication of participant.trackPublications.values()) {
+      if (publication.source === TrackSource.SOURCE_MICROPHONE) {
+        if (!publication.subscribed) {
+          publication.setSubscribed(true);
+        }
+        return publication.track !== undefined;
+      }
+    }
+    return false;
+  };
+
+  const existing = room.remoteParticipants.get(participantIdentity);
+  if (existing && hasMicTrack(existing)) {
+    logger.info('SIP participant microphone track already available');
+    return;
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for microphone track from ${participantIdentity}`));
+    }, timeoutMs);
+
+    const onPublished = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+      if (
+        participant.identity === participantIdentity &&
+        publication.source === TrackSource.SOURCE_MICROPHONE
+      ) {
+        publication.setSubscribed(true);
+      }
+    };
+
+    const onSubscribed = (
+      _track: RemoteTrack,
+      publication: RemoteTrackPublication,
+      participant: RemoteParticipant,
+    ) => {
+      if (
+        participant.identity === participantIdentity &&
+        publication.source === TrackSource.SOURCE_MICROPHONE
+      ) {
+        logger.info('SIP participant microphone track subscribed');
+        cleanup();
+        resolve();
+      }
+    };
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      room.off(RoomEvent.TrackPublished, onPublished);
+      room.off(RoomEvent.TrackSubscribed, onSubscribed);
+    };
+
+    room.on(RoomEvent.TrackPublished, onPublished);
+    room.on(RoomEvent.TrackSubscribed, onSubscribed);
+
+    if (existing) {
+      for (const publication of existing.trackPublications.values()) {
+        if (publication.source === TrackSource.SOURCE_MICROPHONE) {
+          publication.setSubscribed(true);
+        }
+      }
+    }
+  });
 }
 
 async function placeOutboundCall(

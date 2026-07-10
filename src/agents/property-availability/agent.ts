@@ -116,7 +116,7 @@ function buildPropertyTools(state: AgentState) {
       parameters: z.object({
         summary: z.string().describe('Brief summary of the conversation outcome'),
       }),
-      execute: async ({ summary }, { ctx }) => {
+      execute: async ({ summary }) => {
         const result = buildCallResult({
           jobId: state.jobId,
           propertyAvailable: state.propertyAvailable,
@@ -129,12 +129,10 @@ function buildPropertyTools(state: AgentState) {
         await state.resultStore.save(result);
         log().info(`Call completed — job ${state.jobId} summary: ${summary}`);
 
-        ctx.session.generateReply({
-          instructions:
-            'Thank the owner politely for their time, confirm the next steps briefly, and say goodbye in their language.',
-        });
-
-        return `Call ended. Summary: ${summary}`;
+        return (
+          `Results saved. Thank the owner briefly and say goodbye in their language. ` +
+          `Summary: ${summary}`
+        );
       },
     }),
 
