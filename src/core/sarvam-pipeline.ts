@@ -23,6 +23,9 @@ export class SarvamPipelineFactory {
       model: 'saaras:v3',
       languageCode,
       mode: 'transcribe',
+      // Required for Sarvam STT-based turn detection (START/END_SPEECH events)
+      flushSignal: true,
+      highVadSensitivity: true,
     });
   }
 

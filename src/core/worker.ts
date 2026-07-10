@@ -26,17 +26,23 @@ export function createWorkerConfig(
 
       logger.info(`Job started — metadata keys: ${Object.keys(metadata).join(', ')}`);
 
-      const roomName = ctx.room.name;
+      // Console/daemon mode uses a fake job — use job room name, skip SIP, inject test data
+      const isLocalTest = ctx.isFakeJob;
+      const effectiveMetadata = isLocalTest && Object.keys(metadata).length === 0
+        ? getConsoleTestMetadata()
+        : metadata;
+
+      const roomName = ctx.room.name || ctx.job.room?.name;
       if (!roomName) {
         logger.error('Room name is missing — cannot start call job');
         ctx.shutdown();
         return;
       }
 
-      const phoneNumber = metadata.phone_number as string | undefined;
-      const participantIdentity = `owner-${metadata.property_id ?? 'unknown'}`;
+      const phoneNumber = effectiveMetadata.phone_number as string | undefined;
+      const participantIdentity = `owner-${effectiveMetadata.property_id ?? 'unknown'}`;
 
-      if (phoneNumber && settings.sipOutboundTrunkId) {
+      if (!isLocalTest && phoneNumber && settings.sipOutboundTrunkId) {
         try {
           await placeOutboundCall(
             settings,
@@ -50,24 +56,32 @@ export function createWorkerConfig(
           ctx.shutdown();
           return;
         }
-      } else if (phoneNumber) {
+      } else if (!isLocalTest && phoneNumber) {
         logger.warn('phone_number provided but SIP_OUTBOUND_TRUNK_ID is not configured');
       }
 
-      const agent = agentFactory(metadata);
+      const agent = agentFactory(effectiveMetadata);
       const pipeline = new SarvamPipelineFactory(settings);
-      const bundle = pipeline.createPipelineBundle(undefined, telephony);
+      // PSTN uses mulaw 8kHz; local console/daemon needs normal PCM for laptop speakers
+      const useTelephonyAudio = telephony && !isLocalTest;
+      const bundle = pipeline.createPipelineBundle(undefined, useTelephonyAudio);
 
       const session = new voice.AgentSession({
         stt: bundle.stt,
         llm: bundle.llm,
         tts: bundle.tts,
-        preemptiveGeneration: true,
+        // Sarvam docs: use STT speech-boundary signals, not bundled Silero VAD
+        vad: null,
+        turnHandling: {
+          turnDetection: 'stt',
+          endpointing: { minDelay: 70 },
+          preemptiveGeneration: { enabled: true },
+        },
       });
 
       await session.start({ agent, room: ctx.room });
 
-      if (phoneNumber && session._roomIO) {
+      if (!isLocalTest && phoneNumber && session._roomIO) {
         session._roomIO.setParticipant(participantIdentity);
       }
     },
@@ -82,6 +96,22 @@ function parseMetadata(raw: string): CallMetadata {
     log().warn('Failed to parse job metadata as JSON');
     return {};
   }
+}
+
+/** Dummy property data for lk agent console / daemon local testing */
+function getConsoleTestMetadata(): CallMetadata {
+  return {
+    job_id: 'console-test-job',
+    job_type: 'property_availability',
+    owner_name: 'Ramesh Kumar',
+    property_id: 'PROP-CONSOLE-001',
+    property_address: '42, 5th Cross, Indiranagar, Bangalore',
+    property_type: 'rental',
+    bhk: '2 BHK',
+    rent_amount: 25000,
+    city: 'Bangalore',
+    company_name: 'Gullynest',
+  };
 }
 
 async function placeOutboundCall(

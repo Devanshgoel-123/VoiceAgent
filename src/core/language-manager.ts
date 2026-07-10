@@ -115,7 +115,7 @@ Language rules (critical):
     if (kannadaChars > devanagariChars && kannadaChars > 0) return 'kn-IN';
     if (devanagariChars > kannadaChars && devanagariChars > 0) return 'hi-IN';
     if (latinChars > 0) return 'en-IN';
-    return 'unknown';
+    return 'en-IN';
   }
 
   private resolveIntent(text: string): {

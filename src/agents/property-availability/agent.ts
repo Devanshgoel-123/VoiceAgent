@@ -60,13 +60,18 @@ class PropertyAvailabilityAgent extends voice.Agent {
 
   async onEnter(): Promise<void> {
     const phone = this.state.callMetadata.phone_number;
+
+    // Real outbound PSTN calls: callee says "hello?" first — don't talk over the ring
     if (phone) {
       log().info('Outbound call — waiting for owner to speak first');
       return;
     }
 
+    // Console / local test: agent speaks first immediately
     this.session.generateReply({
-      instructions: `Greet ${this.state.ownerName} warmly, introduce yourself from ${this.state.companyName}, and ask if you are speaking with the property owner.`,
+      instructions:
+        `Greet ${this.state.ownerName} warmly, introduce yourself from ${this.state.companyName}, ` +
+        'confirm you are speaking with the property owner, then ask if the property is still available.',
     });
   }
 }
