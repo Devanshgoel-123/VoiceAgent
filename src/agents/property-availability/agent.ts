@@ -1,4 +1,5 @@
-import { llm, log, voice } from '@livekit/agents';
+import { llm, voice } from '@livekit/agents';
+import { callDebug, callError } from '../../core/call-logger.js';
 import { z } from 'zod';
 import type { CallLifecycle } from '../../adapters/livekit-call-session.js';
 import type { CallMetadata } from '../../core/worker.js';
@@ -62,9 +63,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
     });
 
     this.state = state;
-    log().info(
-      `[CALL] agent.ctor job=${state.jobId} owner=${state.ownerName} hasLifecycle=${!!lifecycle}`,
-    );
+    callDebug(`[CALL] agent.ctor job=${state.jobId} owner=${state.ownerName} hasLifecycle=${!!lifecycle}`);
   }
 
   /**
@@ -75,15 +74,15 @@ class PropertyAvailabilityAgent extends voice.Agent {
     const phone = this.state.callMetadata.phone_number;
 
     if (phone) {
-      log().info('[CALL] agent.onEnter:waiting_for_owner');
+      callDebug('[CALL] agent.onEnter:waiting_for_owner');
       return;
     }
 
-    log().info('[CALL] agent.onEnter:console_greet');
+    callDebug('[CALL] agent.onEnter:console_greet');
     this.session.generateReply({
       instructions:
         `Greet ${this.state.ownerName}, introduce yourself from ${this.state.companyName}, ` +
-        'and ask if the property is still available for rent.',
+        `and ask if the property ${this.state.propertyAddress} is still available for rent.`,
     });
   }
 }
@@ -94,11 +93,11 @@ async function saveCallResult(
   summary: string,
 ): Promise<void> {
   if (state.resultSaved) {
-    log().info(`[CALL] agent.saveCallResult:skip already_saved job=${state.jobId}`);
+    callDebug(`[CALL] agent.saveCallResult:skip already_saved job=${state.jobId}`);
     return;
   }
 
-  log().info(`[CALL] agent.saveCallResult:start job=${state.jobId}`);
+  callDebug(`[CALL] agent.saveCallResult:start job=${state.jobId}`);
   const result = buildCallResult({
     jobId: state.jobId,
     propertyAvailable: state.propertyAvailable,
@@ -109,9 +108,7 @@ async function saveCallResult(
 
   await state.resultStore.save(result);
   state.resultSaved = true;
-  log().info(
-    `[CALL] agent.saveCallResult:done job=${state.jobId} result=${state.propertyAvailable}`,
-  );
+  callDebug(`[CALL] agent.saveCallResult:done job=${state.jobId} result=${state.propertyAvailable}`);
 }
 
 function buildPropertyTools(
@@ -133,9 +130,7 @@ function buildPropertyTools(
       }),
       // Return nothing so LiveKit does not run a second LLM "tool reply" pass.
       execute: async ({ isAvailable, ownerResponse }) => {
-        log().info(
-          `[CALL] agent.tool.recordPropertyAvailability:start answer="${ownerResponse}" isAvailable=${isAvailable}`,
-        );
+        callDebug(`[CALL] agent.tool.recordPropertyAvailability:start answer="${ownerResponse}" isAvailable=${isAvailable}`);
         state.propertyAvailable = isAvailable ? 'yes' : 'no';
 
         const summary = isAvailable
@@ -145,28 +140,20 @@ function buildPropertyTools(
         try {
           await saveCallResult(state, summary);
         } catch (error) {
-          log().error(
-            `[CALL] agent.tool.recordPropertyAvailability:save_fail error=${error}`,
-          );
+          callError(`[CALL] agent.tool.recordPropertyAvailability:save_fail error=${error}`);
           throw error;
         }
 
         if (!lifecycle) {
-          log().error(
-            '[CALL] agent.tool.recordPropertyAvailability:no_lifecycle hangup_will_not_run',
-          );
+          callError('[CALL] agent.tool.recordPropertyAvailability:no_lifecycle hangup_will_not_run');
           return;
         }
 
         // Do not wait on speechHandle — after tool-only turns, TTS can sit
         // in "speaking" forever and the done callback never fires.
-        log().info(
-          '[CALL] agent.tool.recordPropertyAvailability:schedule_hangup',
-        );
+        callDebug('[CALL] agent.tool.recordPropertyAvailability:schedule_hangup');
         lifecycle.scheduleHangup();
-        log().info(
-          '[CALL] agent.tool.recordPropertyAvailability:schedule_hangup_done',
-        );
+        callDebug('[CALL] agent.tool.recordPropertyAvailability:schedule_hangup_done');
       },
     }),
 
@@ -177,9 +164,9 @@ function buildPropertyTools(
         language: z.enum(['en-IN', 'hi-IN', 'kn-IN']),
       }),
       execute: async ({ language }) => {
-        log().info(`[CALL] agent.tool.switchLanguage:start language=${language}`);
+        callDebug(`[CALL] agent.tool.switchLanguage:start language=${language}`);
         state.languageManager.setLanguage(language);
-        log().info(`[CALL] agent.tool.switchLanguage:done language=${language}`);
+        callDebug(`[CALL] agent.tool.switchLanguage:done language=${language}`);
         return `Language set to ${language}`;
       },
     }),
@@ -191,9 +178,7 @@ export function createPropertyAvailabilityAgent(
   metadata: CallMetadata,
   lifecycle?: CallLifecycle,
 ): voice.Agent {
-  log().info(
-    `[CALL] agent.factory job=${metadata.job_id ?? 'unknown'} hasLifecycle=${!!lifecycle}`,
-  );
+  callDebug(`[CALL] agent.factory job=${metadata.job_id ?? 'unknown'} hasLifecycle=${!!lifecycle}`);
   return new PropertyAvailabilityAgent(metadata, lifecycle);
 }
 

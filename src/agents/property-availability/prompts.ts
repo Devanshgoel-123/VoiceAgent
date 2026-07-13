@@ -8,7 +8,9 @@ export interface PropertyPromptParams {
   city?: string;
 }
 
-export function buildPropertyAvailabilityInstructions(params: PropertyPromptParams): string {
+export function buildPropertyAvailabilityInstructions(
+  params: PropertyPromptParams,
+): string {
   const propertyDesc = formatProperty(params);
 
   return `
@@ -19,7 +21,6 @@ Ask ${params.ownerName} ONE question only: is the property still available for r
 
 PROPERTY DETAILS:
 ${propertyDesc}
-
 CONVERSATION FLOW:
 1. Greet ${params.ownerName} and say you are calling from ${params.companyName}.
 2. Ask if the property is still available. Wait for a clear yes or no.
@@ -38,10 +39,12 @@ RULES:
 function formatProperty(params: PropertyPromptParams): string {
   const parts = [`- Address: ${params.propertyAddress}`];
   if (params.city) parts.push(`- City: ${params.city}`);
-  parts.push(`- Type: ${params.propertyType ?? 'rental'}`);
+  parts.push(`- Type: ${params.propertyType ?? "rental"}`);
   if (params.bhk) parts.push(`- Configuration: ${params.bhk}`);
   if (params.rentAmount) {
-    parts.push(`- Listed rent: ₹${params.rentAmount.toLocaleString('en-IN')}/month`);
+    parts.push(
+      `- Listed rent: ₹${params.rentAmount.toLocaleString("en-IN")}/month`,
+    );
   }
-  return parts.join('\n');
+  return parts.join("\n");
 }

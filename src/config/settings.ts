@@ -1,6 +1,12 @@
 import 'dotenv/config';
 
+export type AppEnv = 'developer' | 'production';
+
 export interface Settings {
+  /** `developer` enables verbose [CALL] stage logs; `production` keeps warn/error only. */
+  appEnv: AppEnv;
+  /** Explicit override for stage logging. Defaults to true in developer, false in production. */
+  callDebugLogging: boolean;
   livekitUrl: string;
   livekitApiKey: string;
   livekitApiSecret: string;
@@ -19,6 +25,20 @@ export interface Settings {
   telephonySampleRate: number;
 }
 
+function parseAppEnv(raw: string | undefined): AppEnv {
+  const value = (raw ?? 'developer').trim().toLowerCase();
+  if (value === 'production' || value === 'prod') return 'production';
+  return 'developer';
+}
+
+function parseBool(raw: string | undefined, fallback: boolean): boolean {
+  if (raw === undefined || raw === '') return fallback;
+  const value = raw.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(value)) return true;
+  if (['0', 'false', 'no', 'off'].includes(value)) return false;
+  return fallback;
+}
+
 let cachedSettings: Settings | null = null;
 
 export function getSettings(): Settings {
@@ -30,7 +50,13 @@ export function getSettings(): Settings {
     return value;
   };
 
+  const appEnv = parseAppEnv(process.env.APP_ENV);
   cachedSettings = {
+    appEnv,
+    callDebugLogging: parseBool(
+      process.env.CALL_DEBUG_LOGGING,
+      appEnv === 'developer',
+    ),
     livekitUrl: required('LIVEKIT_URL'),
     livekitApiKey: required('LIVEKIT_API_KEY'),
     livekitApiSecret: required('LIVEKIT_API_SECRET'),

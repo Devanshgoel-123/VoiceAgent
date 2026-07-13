@@ -1,4 +1,5 @@
 import { AutoSubscribe, type JobContext, log, voice } from '@livekit/agents';
+import { callDebug, callError, callInfo, callWarn } from './call-logger.js';
 import { LiveKitCallSession } from '../adapters/livekit-call-session.js';
 import { LiveKitSipAdapter } from '../adapters/livekit-sip-adapter.js';
 import { SarvamVoicePipeline } from '../adapters/sarvam-voice-pipeline.js';
@@ -38,7 +39,11 @@ export function createWorkerConfig(
       const logger = log().child({ room: ctx.room.name });
       const metadata = parseMetadata(ctx.job.metadata);
 
-      logger.info(`[CALL] worker.entry:start job=${metadata.job_id ?? ctx.job.id}`);
+      callInfo(
+        `[CALL] worker.entry:start job=${metadata.job_id ?? ctx.job.id} appEnv=${settings.appEnv} callDebug=${settings.callDebugLogging}`,
+        logger,
+      );
+      callDebug('[CALL] worker.entry:debug_tracing_enabled', logger);
 
       const isLocalTest = ctx.isFakeJob;
       const effectiveMetadata =
@@ -47,12 +52,12 @@ export function createWorkerConfig(
           : metadata;
 
       if (isLocalTest) {
-        logger.info('[CALL] worker.entry:mode=local_console');
+        callDebug('[CALL] worker.entry:mode=local_console', logger);
       }
 
       const roomName = ctx.room.name || ctx.job.room?.name;
       if (!roomName) {
-        logger.error('[CALL] worker.entry:fail reason=missing_room_name');
+        callError('[CALL] worker.entry:fail reason=missing_room_name', logger);
         ctx.shutdown();
         return;
       }
@@ -61,23 +66,21 @@ export function createWorkerConfig(
       const participantIdentity = `owner-${effectiveMetadata.property_id ?? 'unknown'}`;
       const isOutboundCall = !isLocalTest && !!phoneNumber;
 
-      logger.info(
-        `[CALL] worker.entry:config outbound=${isOutboundCall} identity=${participantIdentity}`,
-      );
+      callDebug(`[CALL] worker.entry:config outbound=${isOutboundCall} identity=${participantIdentity}`, logger);
 
       if (isOutboundCall) {
-        logger.info('[CALL] worker.entry:connect_room');
+        callDebug('[CALL] worker.entry:connect_room', logger);
         await ctx.connect(undefined, AutoSubscribe.AUDIO_ONLY);
-        logger.info('[CALL] worker.entry:connect_room_done');
+        callDebug('[CALL] worker.entry:connect_room_done', logger);
       }
 
       // PCM TTS for outbound: LiveKit resamples for SIP more reliably than mulaw 8kHz.
-      logger.info('[CALL] worker.entry:create_pipeline');
+      callDebug('[CALL] worker.entry:create_pipeline', logger);
       const pipelineProvider = options.pipeline ?? new SarvamVoicePipeline(settings);
       const pipeline = pipelineProvider.createBundle({ telephony: false });
-      logger.info('[CALL] worker.entry:pipeline_ready');
+      callDebug('[CALL] worker.entry:pipeline_ready', logger);
 
-      logger.info('[CALL] worker.entry:create_call_session');
+      callDebug('[CALL] worker.entry:create_call_session', logger);
       const callSession = new LiveKitCallSession({
         jobContext: ctx,
         pipeline,
@@ -87,40 +90,40 @@ export function createWorkerConfig(
       });
 
       callSession.createSession();
-      logger.info('[CALL] worker.entry:create_agent');
+      callDebug('[CALL] worker.entry:create_agent', logger);
       const agent = agentFactory(effectiveMetadata, callSession);
 
-      logger.info('[CALL] worker.entry:session_start');
+      callDebug('[CALL] worker.entry:session_start', logger);
       await callSession.start(agent);
-      logger.info('[CALL] worker.entry:session_start_done');
+      callDebug('[CALL] worker.entry:session_start_done', logger);
 
       if (!isLocalTest && phoneNumber && settings.sipOutboundTrunkId) {
         try {
           const sip = new LiveKitSipAdapter(settings, logger);
-          logger.info('[CALL] worker.entry:dial_start');
+          callDebug('[CALL] worker.entry:dial_start', logger);
           await sip.dial({
             roomName,
             phoneNumber,
             participantIdentity,
             participantName: (metadata.owner_name as string) ?? 'Property Owner',
           });
-          logger.info('[CALL] worker.entry:wait_microphone');
+          callDebug('[CALL] worker.entry:wait_microphone', logger);
           await sip.waitForMicrophone(ctx.room, participantIdentity);
-          logger.info('[CALL] worker.entry:bind_participant');
+          callDebug('[CALL] worker.entry:bind_participant', logger);
           callSession.setParticipant(participantIdentity);
-          logger.info('[CALL] worker.entry:outbound_ready');
+          callDebug('[CALL] worker.entry:outbound_ready', logger);
         } catch (error) {
-          logger.error(`[CALL] worker.entry:outbound_fail error=${error}`);
+          callError(`[CALL] worker.entry:outbound_fail error=${error}`, logger);
           ctx.shutdown();
           return;
         }
       } else if (!isLocalTest && phoneNumber) {
-        logger.warn('[CALL] worker.entry:skip_dial reason=missing_SIP_OUTBOUND_TRUNK_ID');
+        callWarn('[CALL] worker.entry:skip_dial reason=missing_SIP_OUTBOUND_TRUNK_ID', logger);
       }
 
-      logger.info('[CALL] worker.entry:wait_until_closed');
+      callDebug('[CALL] worker.entry:wait_until_closed', logger);
       await callSession.waitUntilClosed();
-      logger.info('[CALL] worker.entry:end');
+      callDebug('[CALL] worker.entry:end', logger);
     },
   };
 }
@@ -131,7 +134,7 @@ function parseMetadata(raw: string): CallMetadata {
   try {
     return JSON.parse(raw) as CallMetadata;
   } catch {
-    log().warn('[CALL] worker.parseMetadata:fail');
+    callWarn('[CALL] worker.parseMetadata:fail');
     return {};
   }
 }

@@ -1,12 +1,13 @@
 import { getJobContext, type JobContext, log, voice } from '@livekit/agents';
+import { callDebug, callError, callWarn } from '../core/call-logger.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
 export const DEFAULT_GOODBYE_TEXT = 'Thank you for confirming. Have a great day!';
-export const GOODBYE_PLAYOUT_TIMEOUT_MS = 4_000;
+export const GOODBYE_PLAYOUT_TIMEOUT_MS = 4000;
 /** Leave the tool stack, then interrupt any stuck post-tool TTS and hang up. */
 export const HANGUP_DEFER_MS = 300;
 /** If session Close never fires after shutdown, delete the room anyway. */
-export const CLOSE_FALLBACK_TIMEOUT_MS = 2_500;
+export const CLOSE_FALLBACK_TIMEOUT_MS = 1500;
 
 export type CallMetadata = Record<string, unknown>;
 
@@ -55,14 +56,12 @@ export class LiveKitCallSession implements CallLifecycle {
     this.isOutboundCall = options.isOutboundCall;
     this.participantIdentity = options.participantIdentity;
     this.pipeline = options.pipeline;
-    this.logger.info(
-      `[CALL] session.ctor outbound=${this.isOutboundCall} identity=${this.participantIdentity ?? 'none'}`,
-    );
+    callDebug(`[CALL] session.ctor outbound=${this.isOutboundCall} identity=${this.participantIdentity ?? 'none'}`, this.logger);
   }
 
   /** Layman: create the conversation engine and wire STT/LLM/TTS into it. */
   createSession(): voice.AgentSession {
-    this.logger.info('[CALL] session.createSession:start');
+    callDebug('[CALL] session.createSession:start', this.logger);
 
     const session = new voice.AgentSession({
       // Pipeline components are provider-opaque; AgentSession validates at runtime.
@@ -84,14 +83,14 @@ export class LiveKitCallSession implements CallLifecycle {
     this.session = session;
     this.attachTurnLogging(session);
     this.closePromise = this.createClosePromise(session);
-    this.logger.info('[CALL] session.createSession:done');
+    callDebug('[CALL] session.createSession:done', this.logger);
     return session;
   }
 
   /** Layman: put the agent into the LiveKit room so it can hear and speak. */
   async start(agent: voice.Agent): Promise<void> {
     const session = this.requireSession();
-    this.logger.info('[CALL] session.start:begin');
+    callDebug('[CALL] session.start:begin', this.logger);
 
     try {
       await session.start({
@@ -108,18 +107,18 @@ export class LiveKitCallSession implements CallLifecycle {
           : undefined,
         record: { audio: true, traces: false, logs: false, transcript: false },
       });
-      this.logger.info('[CALL] session.start:done');
+      callDebug('[CALL] session.start:done', this.logger);
     } catch (error) {
-      this.logger.error(`[CALL] session.start:fail error=${error}`);
+      callError(`[CALL] session.start:fail error=${error}`, this.logger);
       throw error;
     }
   }
 
   /** Layman: tell the session "listen to this phone participant". */
   setParticipant(identity: string): void {
-    this.logger.info(`[CALL] session.setParticipant identity=${identity}`);
+    callDebug(`[CALL] session.setParticipant identity=${identity}`, this.logger);
     this.requireSession()._roomIO?.setParticipant(identity);
-    this.logger.info('[CALL] session.setParticipant:done');
+    callDebug('[CALL] session.setParticipant:done', this.logger);
   }
 
   /**
@@ -129,16 +128,14 @@ export class LiveKitCallSession implements CallLifecycle {
    */
   scheduleHangup(): void {
     if (this.hangupStarted || this.hangupScheduled) {
-      this.logger.info('[CALL] session.scheduleHangup:skip already_scheduled');
+      callDebug('[CALL] session.scheduleHangup:skip already_scheduled', this.logger);
       return;
     }
     this.hangupScheduled = true;
-    this.logger.info(
-      `[CALL] session.scheduleHangup:deferred_ms=${HANGUP_DEFER_MS}`,
-    );
+    callDebug(`[CALL] session.scheduleHangup:deferred_ms=${HANGUP_DEFER_MS}`, this.logger);
 
     setTimeout(() => {
-      this.logger.info('[CALL] session.scheduleHangup:defer_fired');
+      callDebug('[CALL] session.scheduleHangup:defer_fired', this.logger);
       void this.playGoodbyeAndHangup();
     }, HANGUP_DEFER_MS);
   }
@@ -150,7 +147,7 @@ export class LiveKitCallSession implements CallLifecycle {
 
   /** Layman: keep the worker parked until the call fully ends. */
   waitUntilClosed(): Promise<void> {
-    this.logger.info('[CALL] session.waitUntilClosed:waiting');
+    callDebug('[CALL] session.waitUntilClosed:waiting', this.logger);
     return this.closePromise ?? Promise.resolve();
   }
 
@@ -170,22 +167,18 @@ export class LiveKitCallSession implements CallLifecycle {
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
       agentState = ev.newState;
-      this.logger.info(
-        `[CALL] session.state ${ev.oldState} -> ${ev.newState}`,
-      );
+      callDebug(`[CALL] session.state ${ev.oldState} -> ${ev.newState}`, this.logger);
       if (ev.newState === 'thinking' || ev.newState === 'speaking') {
         clearTurnCommitTimer();
       }
     });
 
     session.on(voice.AgentSessionEventTypes.SpeechCreated, (ev) => {
-      this.logger.info(
-        `[CALL] session.speech_created id=${ev.speechHandle.id} source=${ev.source}`,
-      );
+      callDebug(`[CALL] session.speech_created id=${ev.speechHandle.id} source=${ev.source}`, this.logger);
     });
 
     session.on(voice.AgentSessionEventTypes.Error, (ev) => {
-      this.logger.error({ error: ev.error }, '[CALL] session.error');
+      callError('[CALL] session.error', this.logger, { error: ev.error });
     });
 
     session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
@@ -193,17 +186,15 @@ export class LiveKitCallSession implements CallLifecycle {
         return;
       }
 
-      this.logger.info(`[CALL] session.stt:final transcript="${ev.transcript}"`);
+      callDebug(`[CALL] session.stt:final transcript="${ev.transcript}"`, this.logger);
       clearTurnCommitTimer();
       turnCommitTimer = setTimeout(() => {
         turnCommitTimer = undefined;
         if (canCommitUserTurn()) {
-          this.logger.info('[CALL] session.turn:commit');
+          callDebug('[CALL] session.turn:commit', this.logger);
           session.commitUserTurn();
         } else {
-          this.logger.info(
-            `[CALL] session.turn:commit_skipped state=${agentState}`,
-          );
+          callDebug(`[CALL] session.turn:commit_skipped state=${agentState}`, this.logger);
         }
       }, 900);
     });
@@ -214,7 +205,7 @@ export class LiveKitCallSession implements CallLifecycle {
       this.resolveClose = resolve;
 
       session.on(voice.AgentSessionEventTypes.Close, (ev) => {
-        this.logger.info(`[CALL] session.close:event reason=${String(ev.reason)}`);
+        callDebug(`[CALL] session.close:event reason=${String(ev.reason)}`, this.logger);
         void this.finalizeHangup(String(ev.reason));
       });
     });
@@ -229,7 +220,7 @@ export class LiveKitCallSession implements CallLifecycle {
    */
   private async playGoodbyeAndHangup(): Promise<void> {
     if (this.hangupStarted) {
-      this.logger.info('[CALL] session.goodbye:skip already_started');
+      callDebug('[CALL] session.goodbye:skip already_started', this.logger);
       return;
     }
     this.hangupStarted = true;
@@ -237,17 +228,17 @@ export class LiveKitCallSession implements CallLifecycle {
     const session = this.requireSession();
 
     try {
-      this.logger.info('[CALL] session.goodbye:interrupt_stuck_speech');
+      callDebug('[CALL] session.goodbye:interrupt_stuck_speech', this.logger);
       session.interrupt({ force: true });
     } catch (error) {
-      this.logger.warn(`[CALL] session.goodbye:interrupt_fail error=${error}`);
+      callWarn(`[CALL] session.goodbye:interrupt_fail error=${error}`, this.logger);
     }
 
     // Let the force-interrupt settle before starting goodbye TTS.
     await sleep(150);
 
     try {
-      this.logger.info(`[CALL] session.goodbye:play_start text="${this.goodbyeText}"`);
+      callDebug(`[CALL] session.goodbye:play_start text="${this.goodbyeText}"`, this.logger);
       // allowInterruptions so we can force-cut if playout hangs before shutdown
       const speech = session.say(this.goodbyeText, { allowInterruptions: true });
       const timedOut = await raceWithTimeout(
@@ -255,27 +246,27 @@ export class LiveKitCallSession implements CallLifecycle {
         GOODBYE_PLAYOUT_TIMEOUT_MS,
       );
       if (timedOut) {
-        this.logger.warn('[CALL] session.goodbye:play_timeout');
+        callWarn('[CALL] session.goodbye:play_timeout', this.logger);
       } else {
-        this.logger.info('[CALL] session.goodbye:play_done');
+        callDebug('[CALL] session.goodbye:play_done', this.logger);
       }
     } catch (error) {
-      this.logger.error(`[CALL] session.goodbye:play_fail error=${error}`);
+      callError(`[CALL] session.goodbye:play_fail error=${error}`, this.logger);
     }
 
     try {
-      this.logger.info('[CALL] session.goodbye:interrupt_before_shutdown');
+      callDebug('[CALL] session.goodbye:interrupt_before_shutdown', this.logger);
       session.interrupt({ force: true });
     } catch (error) {
-      this.logger.warn(`[CALL] session.goodbye:interrupt_before_shutdown_fail error=${error}`);
+      callWarn(`[CALL] session.goodbye:interrupt_before_shutdown_fail error=${error}`, this.logger);
     }
 
     await sleep(50);
 
     // drain:false → force-interrupt path; avoids waiting forever on hung TTS playout.
-    this.logger.info('[CALL] session.goodbye:shutdown_start drain=false');
+    callDebug('[CALL] session.goodbye:shutdown_start drain=false', this.logger);
     session.shutdown({ drain: false, reason: 'availability confirmed' });
-    this.logger.info('[CALL] session.goodbye:shutdown_requested');
+    callDebug('[CALL] session.goodbye:shutdown_requested', this.logger);
 
     // Do not wait for Close — with outbound closeOnDisconnect:false, SIP stays up
     // until the room is deleted. Delete immediately after shutdown.
@@ -284,9 +275,7 @@ export class LiveKitCallSession implements CallLifecycle {
     // Safety net if finalize somehow raced / Close path still needed elsewhere.
     setTimeout(() => {
       if (this.closeResolved && this.roomDeleted) return;
-      this.logger.warn(
-        `[CALL] session.close:fallback_timeout ms=${CLOSE_FALLBACK_TIMEOUT_MS}`,
-      );
+      callWarn(`[CALL] session.close:fallback_timeout ms=${CLOSE_FALLBACK_TIMEOUT_MS}`, this.logger);
       void this.finalizeHangup('close_fallback_timeout');
     }, CLOSE_FALLBACK_TIMEOUT_MS);
   }
@@ -294,21 +283,21 @@ export class LiveKitCallSession implements CallLifecycle {
   /** Delete room + shut down job. Idempotent hard hangup. */
   private async finalizeHangup(reason: string): Promise<void> {
     if (this.closeResolved) {
-      this.logger.info(`[CALL] session.finalizeHangup:skip already_done reason=${reason}`);
+      callDebug(`[CALL] session.finalizeHangup:skip already_done reason=${reason}`, this.logger);
       return;
     }
     this.closeResolved = true;
 
-    this.logger.info(`[CALL] session.finalizeHangup:start reason=${reason}`);
+    callDebug(`[CALL] session.finalizeHangup:start reason=${reason}`, this.logger);
 
     if (!this.roomDeleted) {
       this.roomDeleted = true;
       try {
-        this.logger.info('[CALL] session.finalizeHangup:deleteRoom_start');
+        callDebug('[CALL] session.finalizeHangup:deleteRoom_start', this.logger);
         await this.ctx.deleteRoom();
-        this.logger.info('[CALL] session.finalizeHangup:deleteRoom_done');
+        callDebug('[CALL] session.finalizeHangup:deleteRoom_done', this.logger);
       } catch (error) {
-        this.logger.error(`[CALL] session.finalizeHangup:deleteRoom_fail error=${error}`);
+        callError(`[CALL] session.finalizeHangup:deleteRoom_fail error=${error}`, this.logger);
       }
     }
 
@@ -317,20 +306,18 @@ export class LiveKitCallSession implements CallLifecycle {
       if (session) {
         const report = this.ctx.makeSessionReport(session);
         if (report.audioRecordingPath) {
-          this.logger.info(
-            `[CALL] session.finalizeHangup:recording path=${report.audioRecordingPath}`,
-          );
+          callDebug(`[CALL] session.finalizeHangup:recording path=${report.audioRecordingPath}`, this.logger);
         }
       }
     } catch (error) {
-      this.logger.warn(`[CALL] session.finalizeHangup:report_fail error=${error}`);
+      callWarn(`[CALL] session.finalizeHangup:report_fail error=${error}`, this.logger);
     }
 
     const jobCtx = getJobContext(false) ?? this.ctx;
-    this.logger.info('[CALL] session.finalizeHangup:job_shutdown');
+    callDebug('[CALL] session.finalizeHangup:job_shutdown', this.logger);
     jobCtx.shutdown(reason);
 
-    this.logger.info('[CALL] session.finalizeHangup:resolved');
+    callDebug('[CALL] session.finalizeHangup:resolved', this.logger);
     this.resolveClose?.();
   }
 

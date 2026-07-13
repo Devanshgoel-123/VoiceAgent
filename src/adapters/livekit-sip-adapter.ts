@@ -1,4 +1,5 @@
 import { log } from '@livekit/agents';
+import { callDebug, callError } from '../core/call-logger.js';
 import {
   RoomEvent,
   TrackSource,
@@ -37,9 +38,7 @@ export class LiveKitSipAdapter {
         ? `${'*'.repeat(options.phoneNumber.length - 4)}${options.phoneNumber.slice(-4)}`
         : '****';
 
-    this.logger.info(
-      `[CALL] sip.dial:start number=${masked} identity=${options.participantIdentity}`,
-    );
+    callDebug(`[CALL] sip.dial:start number=${masked} identity=${options.participantIdentity}`, this.logger);
 
     if (!this.settings.sipOutboundTrunkId) {
       throw new Error('SIP_OUTBOUND_TRUNK_ID is not configured');
@@ -52,7 +51,7 @@ export class LiveKitSipAdapter {
     );
 
     try {
-      this.logger.info('[CALL] sip.dial:createSipParticipant');
+      callDebug('[CALL] sip.dial:createSipParticipant', this.logger);
       await sip.createSipParticipant(
         this.settings.sipOutboundTrunkId,
         options.phoneNumber,
@@ -63,9 +62,9 @@ export class LiveKitSipAdapter {
           waitUntilAnswered: true,
         },
       );
-      this.logger.info('[CALL] sip.dial:answered');
+      callDebug('[CALL] sip.dial:answered', this.logger);
     } catch (error) {
-      this.logger.error(`[CALL] sip.dial:fail error=${error}`);
+      callError(`[CALL] sip.dial:fail error=${error}`, this.logger);
       throw error;
     }
   }
@@ -79,9 +78,7 @@ export class LiveKitSipAdapter {
     participantIdentity: string,
     timeoutMs = 20_000,
   ): Promise<void> {
-    this.logger.info(
-      `[CALL] sip.waitForMicrophone:start identity=${participantIdentity} timeoutMs=${timeoutMs}`,
-    );
+    callDebug(`[CALL] sip.waitForMicrophone:start identity=${participantIdentity} timeoutMs=${timeoutMs}`, this.logger);
 
     const hasMicTrack = (participant: RemoteParticipant): boolean => {
       for (const publication of participant.trackPublications.values()) {
@@ -97,16 +94,14 @@ export class LiveKitSipAdapter {
 
     const existing = room.remoteParticipants.get(participantIdentity);
     if (existing && hasMicTrack(existing)) {
-      this.logger.info('[CALL] sip.waitForMicrophone:ready already_available');
+      callDebug('[CALL] sip.waitForMicrophone:ready already_available', this.logger);
       return;
     }
 
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         cleanup();
-        this.logger.error(
-          `[CALL] sip.waitForMicrophone:timeout identity=${participantIdentity}`,
-        );
+        callError(`[CALL] sip.waitForMicrophone:timeout identity=${participantIdentity}`, this.logger);
         reject(new Error(`Timed out waiting for microphone track from ${participantIdentity}`));
       }, timeoutMs);
 
@@ -118,7 +113,7 @@ export class LiveKitSipAdapter {
           participant.identity === participantIdentity &&
           publication.source === TrackSource.SOURCE_MICROPHONE
         ) {
-          this.logger.info('[CALL] sip.waitForMicrophone:track_published');
+          callDebug('[CALL] sip.waitForMicrophone:track_published', this.logger);
           publication.setSubscribed(true);
         }
       };
@@ -132,7 +127,7 @@ export class LiveKitSipAdapter {
           participant.identity === participantIdentity &&
           publication.source === TrackSource.SOURCE_MICROPHONE
         ) {
-          this.logger.info('[CALL] sip.waitForMicrophone:ready subscribed');
+          callDebug('[CALL] sip.waitForMicrophone:ready subscribed', this.logger);
           cleanup();
           resolve();
         }

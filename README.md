@@ -1,146 +1,226 @@
 # Gully Voice Agent
 
-**Modular Sarvam AI + LiveKit voice agent platform for Gullynest automated outbound calls.**  
-**Calls property owners in Kannada, Hindi, or English to confirm availability and tenant-sourcing intent.**
+**Modular Sarvam AI + LiveKit voice agent for Gullynest automated outbound calls.**  
+Calls property owners in **English, Hindi, or Kannada** and asks **one question**: is the property still available?
 
-Built with **TypeScript**, **LiveKit Agents (Node.js)**, and **Sarvam AI** (Saaras STT, Sarvam LLM, Bulbul TTS).
+Built with **TypeScript**, **LiveKit Agents (Node.js)**, **Twilio SIP** (PSTN), and **Sarvam AI** (Saaras STT, Sarvam LLM, Bulbul TTS).
 
 ---
 
 ## Overview
 
-This repository implements an automated outbound calling system for **Gullynest**. When a property listing needs verification, the system calls the owner and asks:
+When Gullynest needs to verify a listing, this system:
 
-1. **Is your property still available?**
-2. **If yes — should Gullynest help find tenants?**
-
-Owners can answer in **English**, **Hindi**, or **Kannada** (*yes/no*, *haan/nahi*, *haudu/illa*). The agent automatically detects their language and responds in the same language.
+1. Receives a call job (API or CLI) with owner phone + property details
+2. Dispatches a LiveKit agent job
+3. Dials the owner over the normal phone network (PSTN) via Twilio + LiveKit SIP
+4. Runs a short voice conversation (STT → LLM → TTS)
+5. Records yes/no availability, says thank you, hangs up
+6. Saves a JSON result you can fetch later
 
 ---
 
-## Architecture
+## Why each service exists
+
+Think of the call as three layers: **phone network**, **call room**, and **AI brain**.
+
+| Service | Layer | Why we need it |
+|---------|--------|----------------|
+| **Twilio** | Phone network (PSTN) | Owns a real phone number and can place/receive calls on India’s public telephone network. LiveKit alone cannot dial `+91…` without a carrier. |
+| **LiveKit** | Real-time call room + agent runtime | Creates a WebRTC “room”, bridges SIP audio from Twilio into that room, runs your Agent Worker, and manages session lifecycle (listen / speak / hang up). |
+| **Sarvam AI** | Speech + language intelligence | Converts speech↔text and generates replies in Indian languages (en-IN / hi-IN / kn-IN). LiveKit orchestrates; Sarvam does the AI. |
+| **This repo (worker + API)** | Your product logic | Decides *what* to ask, *when* to hang up, and *where* to save results. |
+
+**In one line:** Twilio dials the phone → LiveKit carries the audio and runs the agent → Sarvam understands and speaks → our code runs the Gullynest script.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           GULLY VOICE AGENT PLATFORM (TypeScript)           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ┌──────────────┐    POST /calls/...     ┌─────────────────────────────┐   │
-│  │  Gullynest   │ ─────────────────────► │  Express Trigger API        │   │
-│  │  Backend     │                        │  (src/api/server.ts)        │   │
-│  └──────────────┘                        └──────────────┬──────────────┘   │
-│                                                         │ Agent Dispatch    │
-│                                                         ▼                   │
-│  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │                     LiveKit Cloud                                    │  │
-│  │  ┌─────────────┐   SIP Trunk    ┌──────────────┐   WebRTC Room     │  │
-│  │  │ Outbound    │ ─────────────► │ Property     │ ◄──────────────►  │  │
-│  │  │ PSTN Dial   │                │ Owner Phone  │   Agent Worker    │  │
-│  │  └─────────────┘                └──────────────┘                   │  │
-│  └──────────────────────────────────────────────────────────────────────┘  │
-│                                                         │                   │
-│                                                         ▼                   │
-│  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │              LiveKit Agent Worker (Node.js / TypeScript)             │  │
-│  │                                                                      │  │
-│  │  ┌────────────────┐   ┌─────────────────┐   ┌───────────────────┐  │  │
-│  │  │ Agent Registry │──►│ Property Agent  │──►│ LanguageManager   │  │  │
-│  │  │ (pluggable)    │   │ (domain tools)  │   │ kn/hi/en detect   │  │  │
-│  │  └────────────────┘   └─────────────────┘   └───────────────────┘  │  │
-│  │                                                                      │  │
-│  │  ┌─────────────────────────────────────────────────────────────────┐  │  │
-│  │  │              Sarvam AI Pipeline (sarvam-pipeline.ts)            │  │  │
-│  │  │  Saaras v3 STT  →  Sarvam-105b LLM  →  Bulbul v3 TTS         │  │  │
-│  │  │  (auto LID)         (OpenAI-compatible)   (mulaw 8kHz PSTN)  │  │  │
-│  │  └─────────────────────────────────────────────────────────────────┘  │  │
-│  └──────────────────────────────────────────────────────────────────────┘  │
-│                                                         │                   │
-│                                                         ▼                   │
-│  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │  Call Result Store (JSON → swap for Postgres in production)          │  │
-│  │  GET /calls/results/{jobId}                                         │  │
-│  └──────────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────┘
+Owner's phone (PSTN)
+        ▲
+        │  carrier audio (Twilio)
+        │
+   Twilio SIP Trunk
+        ▲
+        │  SIP
+        │
+   LiveKit Cloud (room + SIP bridge + job dispatch)
+        ▲
+        │  WebRTC / agent protocol
+        │
+   Agent Worker (this repo)
+        │
+        ├── LiveKit adapters (dial, session, hangup)
+        ├── Property agent (one question + tool)
+        └── Sarvam pipeline (STT / LLM / TTS)
 ```
 
-### Call Flow
+---
+
+## Current architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        GULLY VOICE AGENT (TypeScript)                        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Gullynest Backend ──POST /calls/...──► Express API (src/api/server.ts)      │
+│                                              │                               │
+│                                              │ AgentDispatchClient           │
+│                                              ▼                               │
+│                         ┌─────────────────────────────────┐                  │
+│                         │         LiveKit Cloud           │                  │
+│                         │  dispatch job → assign worker   │                  │
+│                         │  WebRTC room + SIP bridge       │                  │
+│                         └─────────────┬───────────────────┘                  │
+│                                       │                                      │
+│                                       ▼                                      │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │                     Agent Worker (this process)                        │  │
+│  │                                                                        │  │
+│  │  worker.ts (orchestrator)                                              │  │
+│  │       │                                                                │  │
+│  │       ├── SarvamVoicePipeline     ears / brain / mouth (STT/LLM/TTS)   │  │
+│  │       ├── LiveKitCallSession      conversation + goodbye + hangup      │  │
+│  │       ├── LiveKitSipAdapter       dial + wait for mic track            │  │
+│  │       └── PropertyAvailabilityAgent  domain script + one tool          │  │
+│  │                                                                        │  │
+│  │  Hangup path: tool → scheduleHangup → goodbye → deleteRoom → end       │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+│                                       │                                      │
+│                                       ▼                                      │
+│                         Call results JSON (src/jobs/results.ts)              │
+└──────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      │ SIP outbound trunk
+                                      ▼
+                               Twilio ──► Owner phone (PSTN)
+```
+
+### Adapters (current layout)
+
+| Module | Role (plain English) |
+|--------|----------------------|
+| `src/adapters/voice-pipeline.ts` | Interface for “build STT+LLM+TTS” |
+| `src/adapters/sarvam-voice-pipeline.ts` | Sarvam implementation of that pipeline |
+| `src/adapters/livekit-sip-adapter.ts` | Dial owner + wait until mic audio is in the room |
+| `src/adapters/livekit-call-session.ts` | Start session, turn logs, thank-you, forced hangup |
+| `src/core/worker.ts` | Thin entrypoint: connect → pipeline → session → dial → wait |
+| `src/agents/property-availability/` | Domain agent: greet, ask availability, record, hang up |
+
+---
+
+## Information flow (step by step)
 
 ```mermaid
 sequenceDiagram
-    participant G as Gullynest Backend
+    participant G as Gullynest / CLI
     participant API as Express API
     participant LK as LiveKit Cloud
-    participant W as Agent Worker (TS)
+    participant W as Agent Worker
+    participant TW as Twilio
+    participant O as Owner phone
     participant S as Sarvam AI
-    participant O as Property Owner
 
     G->>API: POST /calls/property-availability
-    API->>LK: AgentDispatchClient.createDispatch()
-    LK->>W: Job with property + phone metadata
-    W->>LK: SipClient.createSipParticipant()
-    LK->>O: Outbound PSTN call
-    O->>W: "Hello?" (any language)
-    W->>S: STT (Saaras v3)
-    S->>W: Transcript
-    W->>S: LLM (Sarvam-105b) + tools
-    S->>W: Response text
-    W->>S: TTS (Bulbul v3, matching language)
-    W->>O: "Is your property still available?"
-    O->>W: "Haan" / "Yes" / "Haudu"
-    W->>W: recordPropertyAvailability()
-    W->>O: "Should Gullynest find tenants?"
-    O->>W: "Illa" / "No"
-    W->>W: endCallWithSummary() → save result
+    API->>LK: createDispatch(room, agentName, metadata)
+    LK->>W: Assign job (phone, owner, property)
+    W->>LK: Connect to room + start AgentSession
+    W->>LK: SipClient.createSipParticipant(trunk, phone)
+    LK->>TW: Outbound SIP invite
+    TW->>O: Ring PSTN call
+    O-->>TW: Answers
+    TW-->>LK: SIP audio bridged into room
+    W->>W: Wait for microphone track, bind participant
+
+    Note over O,W: Conversation loop (one question)
+    O->>LK: Voice audio
+    LK->>W: WebRTC audio
+    W->>S: STT (Saaras) → transcript
+    W->>S: LLM (Sarvam-105b) → reply / tool call
+    W->>S: TTS (Bulbul) → audio
+    W->>LK: Play audio to room
+    LK->>TW: SIP audio
+    TW->>O: Owner hears agent
+
+    W->>W: recordPropertyAvailability + save JSON
+    W->>O: Fixed goodbye TTS
+    W->>LK: shutdown + deleteRoom (SIP call drops)
     G->>API: GET /calls/results/{jobId}
 ```
 
+### What moves on the wire
+
+| Hop | What travels |
+|-----|----------------|
+| Owner ↔ Twilio | Normal phone audio (PSTN) |
+| Twilio ↔ LiveKit | SIP (signaling + media for the trunk) |
+| LiveKit ↔ Worker | WebRTC room audio + agent control messages |
+| Worker ↔ Sarvam | HTTPS/WebSocket API calls (text + audio streams) |
+
 ---
 
-## Project Structure
+## Call script (current product behavior)
+
+1. Wait for owner to speak first on real calls (typical “Hello?”)
+2. Greet and ask: **is the property still available?**
+3. Call tool `recordPropertyAvailability`
+4. Save result to disk
+5. Say thank you and hang up (no tenant / visit follow-ups)
+
+---
+
+## Project structure
 
 ```
 voiceAgent/
 ├── src/
-│   ├── config/              # Environment settings
-│   ├── core/                # Reusable framework
-│   │   ├── base-agent.ts         # Multilingual agent factory
-│   │   ├── language-manager.ts   # kn/hi/en + yes/no detection
-│   │   ├── sarvam-pipeline.ts    # STT / LLM / TTS factory
-│   │   └── worker.ts             # LiveKit entrypoint factory
-│   ├── agents/              # Pluggable domain agents
+│   ├── adapters/                 # LiveKit + Sarvam integrations
+│   │   ├── voice-pipeline.ts
+│   │   ├── sarvam-voice-pipeline.ts
+│   │   ├── livekit-sip-adapter.ts
+│   │   └── livekit-call-session.ts
+│   ├── agents/                   # Domain agents (pluggable)
 │   │   ├── registry.ts
 │   │   └── property-availability/
 │   │       ├── agent.ts
 │   │       └── prompts.ts
-│   ├── jobs/                # Dispatch + result models
-│   ├── api/                 # Express trigger API
-│   ├── workers/             # LiveKit worker entrypoints
-│   └── scripts/             # CLI utilities
+│   ├── config/                   # Settings (APP_ENV, keys, trunk id)
+│   ├── core/
+│   │   ├── worker.ts             # Job entrypoint orchestrator
+│   │   ├── call-logger.ts        # Developer vs production stage logs
+│   │   ├── language-manager.ts
+│   │   └── sarvam-pipeline.ts    # Deprecated re-export wrapper
+│   ├── jobs/                     # Dispatch + result store
+│   ├── api/                      # Express trigger API
+│   ├── workers/                  # LiveKit worker process entry
+│   └── scripts/                  # CLI trigger
 ├── tests/
-├── package.json
-├── tsconfig.json
-└── .env.example
+├── .env.example
+└── package.json
 ```
 
 ---
 
-## Adding a New Voice Agent
+## Glossary
 
-```typescript
-// src/agents/rent-reminder/agent.ts
-import { registerAgent } from '../registry.js';
-import { voice, llm } from '@livekit/agents';
-
-class RentReminderAgent extends voice.Agent {
-  constructor(metadata: Record<string, unknown>) {
-    super({ instructions: '...', tools: { /* llm.tool(...) */ } });
-  }
-}
-
-registerAgent('rent_reminder', (metadata) => new RentReminderAgent(metadata));
-```
-
-Then import the agent in your worker, add a dispatch method, and expose an API route.
+| Term | Meaning |
+|------|---------|
+| **PSTN** | *Public Switched Telephone Network* — the real phone network (`+91…` mobiles/landlines). Not the internet. |
+| **SIP** | *Session Initiation Protocol* — internet signaling used to set up/tear down voice sessions. LiveKit talks SIP to Twilio; Twilio talks PSTN to the phone. |
+| **SIP trunk** | A configured “pipe” between LiveKit and a carrier (Twilio). Outbound trunk ID looks like `ST_…`. Without it, the agent cannot place phone calls. |
+| **Trunk** | Short for SIP trunk — the telephony connection profile (credentials, numbers, routing) linking LiveKit ↔ Twilio. |
+| **WebRTC** | Browser/app real-time media protocol. LiveKit rooms use WebRTC between cloud and the agent worker. |
+| **Room** | A LiveKit session container. Owner (via SIP) and agent both join the same room so audio can flow. |
+| **Participant** | Anyone in the room (agent, or `owner-{propertyId}` for the phone). |
+| **Agent Worker** | Long-running Node process that registers with LiveKit and handles call jobs. |
+| **Dispatch** | Asking LiveKit to start a specific agent (`AGENT_NAME`) in a room with metadata (phone, property). |
+| **AgentSession** | LiveKit object that wires STT/LLM/TTS, turn-taking, `say()`, tools, and shutdown. |
+| **STT** | *Speech-to-Text* — audio → transcript (Sarvam Saaras). |
+| **LLM** | *Large Language Model* — decides what to say / which tool to call (Sarvam-105b). |
+| **TTS** | *Text-to-Speech* — reply text → audio (Sarvam Bulbul). |
+| **VAD** | *Voice Activity Detection* — detects when someone is talking (we rely mainly on STT turn detection for phone). |
+| **Tool / function call** | Structured action the LLM can invoke (e.g. `recordPropertyAvailability`) instead of only chatting. |
+| **mulaw / PCM** | Audio encodings. PSTN often uses mulaw 8 kHz; this project uses PCM for outbound TTS and lets LiveKit resample for SIP reliability. |
+| **DND / TRAI** | India telecom rules around who you may call; product compliance is outside this repo but required in production. |
 
 ---
 
@@ -148,9 +228,9 @@ Then import the agent in your worker, add a dispatch method, and expose an API r
 
 | Service | Purpose |
 |---------|---------|
-| [Sarvam AI](https://dashboard.sarvam.ai) | STT, LLM, TTS (Indian languages) |
-| [LiveKit Cloud](https://cloud.livekit.io) | Agent hosting + SIP telephony |
-| Outbound SIP Trunk | PSTN calls (Twilio / Exotel / Wavix) |
+| [Sarvam AI](https://dashboard.sarvam.ai) | STT, LLM, TTS for Indian languages |
+| [LiveKit Cloud](https://cloud.livekit.io) | Rooms, agent dispatch, SIP bridge, worker jobs |
+| [Twilio](https://www.twilio.com) (or similar) | PSTN carrier behind the LiveKit outbound SIP trunk |
 
 ---
 
@@ -166,21 +246,25 @@ cp .env.example .env   # fill in API keys
 
 ### 2. Configure SIP (one-time)
 
-Create an **outbound SIP trunk** in LiveKit and set `SIP_OUTBOUND_TRUNK_ID=ST_...` in `.env`.
+1. Connect Twilio (or another carrier) as an **outbound SIP trunk** in LiveKit
+2. Set `SIP_OUTBOUND_TRUNK_ID=ST_...` in `.env`
+3. On Twilio trial accounts, destination numbers usually must be verified
 
 ### 3. Start the agent worker
 
 ```bash
 npm run dev:worker
+# or
+npm run start:worker
 ```
+
+Run **one** worker process while testing (stale workers cause duplicate jobs / weird SIP errors).
 
 ### 4. Test locally (no phone)
 
 ```bash
 npm run console:worker
 ```
-
-Speak in English, Hindi, or Kannada — the agent mirrors your language.
 
 ### 5. Start the trigger API
 
@@ -226,32 +310,40 @@ curl http://localhost:8080/calls/results/{job_id}
 
 ---
 
-## Multilingual Support
+## Multilingual support
 
-| Language | Code | Yes | No | TTS Voice |
+| Language | Code | Yes | No | TTS voice |
 |----------|------|-----|-----|-----------|
 | English | `en-IN` | yes, yeah | no, nope | aditya |
 | Hindi | `hi-IN` | haan, ji | nahi, na | anand |
 | Kannada | `kn-IN` | haudu | illa, beda | priya |
 
-- **STT**: Saaras v3 with auto language detection
+- **STT**: Saaras v3 (auto language detection)
 - **LLM**: Sarvam-105b via OpenAI-compatible API (`https://api.sarvam.ai/v1`)
-- **TTS**: Bulbul v3 with per-language voice mapping
-- **Tools**: `recordPropertyAvailability`, `recordTenantSourcingIntent`, `endCallWithSummary`
+- **TTS**: Bulbul v3 with per-language speaker mapping
+- **Tools**: `recordPropertyAvailability`, `switchConversationLanguage`
 
 ---
 
-## Environment Variables
+## Environment variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
+| `APP_ENV` | No | `developer` (default) or `production` |
+| `CALL_DEBUG_LOGGING` | No | Override verbose `[CALL]` stage logs (`true`/`false`) |
 | `LIVEKIT_URL` | Yes | LiveKit WebSocket URL |
 | `LIVEKIT_API_KEY` | Yes | LiveKit API key |
 | `LIVEKIT_API_SECRET` | Yes | LiveKit API secret |
 | `SARVAM_API_KEY` | Yes | Sarvam AI API key |
-| `SIP_OUTBOUND_TRUNK_ID` | For calls | Outbound SIP trunk (`ST_...`) |
+| `SIP_OUTBOUND_TRUNK_ID` | For phone calls | Outbound SIP trunk (`ST_...`) |
 | `AGENT_NAME` | No | Dispatch name (default: `gully-property-availability-agent`) |
 | `COMPANY_NAME` | No | Brand name (default: `Gullynest`) |
+| `API_HOST` / `API_PORT` | No | Trigger API bind address |
+
+### Logging
+
+- `APP_ENV=developer` → verbose `[CALL]` stage tracing (default)
+- `APP_ENV=production` → warn/error only (unless `CALL_DEBUG_LOGGING=true`)
 
 ---
 
@@ -259,23 +351,56 @@ curl http://localhost:8080/calls/results/{job_id}
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev:worker` | Run agent worker in dev mode |
-| `npm run start:worker` | Run agent worker in production mode |
-| `npm run console:worker` | Test agent in terminal (no phone) |
-| `npm run dev:api` | Start Express trigger API |
-| `npm run trigger:call` | CLI to dispatch a call |
-| `npm test` | Run unit tests |
-| `npm run typecheck` | TypeScript type check |
+| `npm run dev:worker` | Agent worker (dev) |
+| `npm run start:worker` | Agent worker (start) |
+| `npm run console:worker` | Terminal test (no phone) |
+| `npm run dev:api` | Express trigger API |
+| `npm run trigger:call` | CLI dispatch |
+| `npm test` | Unit tests |
+| `npm run typecheck` | TypeScript check |
 
 ---
 
-## Production Notes
+## Adding a new voice agent
+
+```typescript
+// src/agents/rent-reminder/agent.ts
+import { registerAgent } from '../registry.js';
+import { voice, llm } from '@livekit/agents';
+
+class RentReminderAgent extends voice.Agent {
+  constructor(metadata: Record<string, unknown>) {
+    super({ instructions: '...', tools: { /* llm.tool(...) */ } });
+  }
+}
+
+registerAgent('rent_reminder', (metadata) => new RentReminderAgent(metadata));
+```
+
+Import it from a worker, add a dispatch path, and expose an API route. Reuse the same adapters (`LiveKitCallSession`, `LiveKitSipAdapter`, `SarvamVoicePipeline`).
+
+---
+
+## Production notes
 
 - Replace `CallResultStore` (JSON files) with Postgres/Redis
-- Integrate with your job queue (BullMQ, n8n) to schedule calls
+- Put `APP_ENV=production` and keep `CALL_DEBUG_LOGGING` off unless debugging
+- Run a single healthy worker per environment; kill orphans before redeploy
 - Ensure TRAI DND compliance and owner consent
-- TTS uses `mulaw` at 8 kHz for PSTN telephony
-- Deploy worker to LiveKit Cloud: `npm run start:worker`
+- Twilio trial: verify destination numbers
+- Prefer the hangup path that **deletes the LiveKit room** — that is what drops the SIP/PSTN call when `closeOnDisconnect` is false
+
+---
+
+## Further reading (LiveKit)
+
+| Topic | Docs |
+|-------|------|
+| Agents (Node) | https://docs.livekit.io/agents-js/ |
+| AgentSession | https://docs.livekit.io/agents/logic/sessions/ |
+| Tools | https://docs.livekit.io/agents/build/tools/ |
+| SIP outbound | https://docs.livekit.io/sip/outbound-calls/ |
+| Agent dispatch | https://docs.livekit.io/agents/worker/agent-dispatch/ |
 
 ---
 
