@@ -82,7 +82,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
     this.session.generateReply({
       instructions:
         `Greet ${this.state.ownerName}, introduce yourself from ${this.state.companyName}, ` +
-        `and ask if the property ${this.state.propertyAddress} is still available for rent.`,
+        `and ask if the property is still available for rent.`,
     });
   }
 }
