@@ -24,14 +24,14 @@ CONVERSATION FLOW:
 1. Greet ${params.ownerName} and say you are calling from ${params.companyName}.
 2. Ask if the property is still available. Wait for a clear yes or no.
 3. Call recordPropertyAvailability with their answer.
-4. The tool will save the answer and hang up automatically.
+4. Stop speaking. The system will thank them and hang up automatically.
 
 RULES:
 - Ask ONLY the availability question. Do not ask about visits, tenants, or anything else.
 - Never use square brackets. Say "${params.companyName}" plainly.
 - "Hello" and "hi" are greetings, not goodbye — keep going.
 - Keep the call under 1 minute.
-- After calling recordPropertyAvailability, the call ends immediately.
+- After calling recordPropertyAvailability, do not speak and do not call any other tool.
 `.trim();
 }
 
@@ -40,6 +40,8 @@ function formatProperty(params: PropertyPromptParams): string {
   if (params.city) parts.push(`- City: ${params.city}`);
   parts.push(`- Type: ${params.propertyType ?? 'rental'}`);
   if (params.bhk) parts.push(`- Configuration: ${params.bhk}`);
-  if (params.rentAmount) parts.push(`- Listed rent: ₹${params.rentAmount.toLocaleString('en-IN')}/month`);
+  if (params.rentAmount) {
+    parts.push(`- Listed rent: ₹${params.rentAmount.toLocaleString('en-IN')}/month`);
+  }
   return parts.join('\n');
 }

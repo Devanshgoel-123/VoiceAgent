@@ -1,46 +1,58 @@
 import { AutoSubscribe, type JobContext, log, voice } from '@livekit/agents';
-import {
-  RoomEvent,
-  TrackSource,
-  type RemoteParticipant,
-  type RemoteTrack,
-  type RemoteTrackPublication,
-  type Room,
-} from '@livekit/rtc-node';
-
-import { SipClient } from 'livekit-server-sdk';
+import { LiveKitCallSession } from '../adapters/livekit-call-session.js';
+import { LiveKitSipAdapter } from '../adapters/livekit-sip-adapter.js';
+import { SarvamVoicePipeline } from '../adapters/sarvam-voice-pipeline.js';
+import type { VoicePipelineProvider } from '../adapters/voice-pipeline.js';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
-import { SarvamPipelineFactory } from './sarvam-pipeline.js';
 
 export type CallMetadata = Record<string, unknown>;
 
-export type AgentFactory = (metadata: CallMetadata) => voice.Agent;
+export type AgentFactory = (
+  metadata: CallMetadata,
+  lifecycle?: import('../adapters/livekit-call-session.js').CallLifecycle,
+) => voice.Agent;
 
 export interface WorkerConfig {
   entry: (ctx: JobContext) => Promise<void>;
 }
 
+export interface WorkerConfigOptions {
+  telephony?: boolean;
+  settings?: Settings;
+  pipeline?: VoicePipelineProvider;
+}
+
+/**
+ * Builds the LiveKit job entrypoint.
+ * Layman: this is the "main script" that runs every time LiveKit assigns a call job.
+ */
 export function createWorkerConfig(
   agentFactory: AgentFactory,
-  options: { telephony?: boolean; settings?: Settings } = {},
+  options: WorkerConfigOptions = {},
 ): WorkerConfig {
   return {
     entry: async (ctx: JobContext) => {
       const settings = options.settings ?? getSettings();
+      console.log('settings', settings);
       const logger = log().child({ room: ctx.room.name });
       const metadata = parseMetadata(ctx.job.metadata);
 
-      logger.info(`[CALL] job:start id=${metadata.job_id ?? ctx.job.id}`);
+      logger.info(`[CALL] worker.entry:start job=${metadata.job_id ?? ctx.job.id}`);
 
       const isLocalTest = ctx.isFakeJob;
-      const effectiveMetadata = isLocalTest && Object.keys(metadata).length === 0
-        ? getConsoleTestMetadata()
-        : metadata;
+      const effectiveMetadata =
+        isLocalTest && Object.keys(metadata).length === 0
+          ? getConsoleTestMetadata()
+          : metadata;
+
+      if (isLocalTest) {
+        logger.info('[CALL] worker.entry:mode=local_console');
+      }
 
       const roomName = ctx.room.name || ctx.job.room?.name;
       if (!roomName) {
-        logger.error('Room name is missing — cannot start call job');
+        logger.error('[CALL] worker.entry:fail reason=missing_room_name');
         ctx.shutdown();
         return;
       }
@@ -49,140 +61,82 @@ export function createWorkerConfig(
       const participantIdentity = `owner-${effectiveMetadata.property_id ?? 'unknown'}`;
       const isOutboundCall = !isLocalTest && !!phoneNumber;
 
+      logger.info(
+        `[CALL] worker.entry:config outbound=${isOutboundCall} identity=${participantIdentity}`,
+      );
+
       if (isOutboundCall) {
+        logger.info('[CALL] worker.entry:connect_room');
         await ctx.connect(undefined, AutoSubscribe.AUDIO_ONLY);
+        logger.info('[CALL] worker.entry:connect_room_done');
       }
 
-      const agent = agentFactory(effectiveMetadata);
-      const pipeline = new SarvamPipelineFactory(settings);
-      const bundle = pipeline.createPipelineBundle(undefined, false);
+      // PCM TTS for outbound: LiveKit resamples for SIP more reliably than mulaw 8kHz.
+      logger.info('[CALL] worker.entry:create_pipeline');
+      const pipelineProvider = options.pipeline ?? new SarvamVoicePipeline(settings);
+      const pipeline = pipelineProvider.createBundle({ telephony: false });
+      logger.info('[CALL] worker.entry:pipeline_ready');
 
-      const session = new voice.AgentSession({
-        stt: bundle.stt,
-        llm: bundle.llm,
-        tts: bundle.tts,
-        vad: null,
-        turnHandling: {
-          turnDetection: 'stt',
-          endpointing: { minDelay: isOutboundCall ? 600 : 70 },
-          preemptiveGeneration: { enabled: !isOutboundCall },
-          interruption: {
-            enabled: !isOutboundCall,
-            discardAudioIfUninterruptible: isOutboundCall,
-          },
-        },
+      logger.info('[CALL] worker.entry:create_call_session');
+      const callSession = new LiveKitCallSession({
+        jobContext: ctx,
+        pipeline,
+        isOutboundCall,
+        participantIdentity,
+        logger,
       });
 
-      attachSessionDebugLogging(session, logger, isOutboundCall);
+      callSession.createSession();
+      logger.info('[CALL] worker.entry:create_agent');
+      const agent = agentFactory(effectiveMetadata, callSession);
 
-      // Join room and publish agent audio BEFORE dialing so SIP can subscribe immediately
-      await session.start({
-        agent,
-        room: ctx.room,
-        inputOptions: isOutboundCall
-          ? { participantIdentity, closeOnDisconnect: false }
-          : undefined,
-        outputOptions: isOutboundCall
-          ? { syncTranscription: false }
-          : undefined,
-        record: { audio: true, traces: false, logs: false, transcript: false },
-      });
+      logger.info('[CALL] worker.entry:session_start');
+      await callSession.start(agent);
+      logger.info('[CALL] worker.entry:session_start_done');
 
       if (!isLocalTest && phoneNumber && settings.sipOutboundTrunkId) {
         try {
-          await placeOutboundCall(
-            settings,
+          const sip = new LiveKitSipAdapter(settings, logger);
+          logger.info('[CALL] worker.entry:dial_start');
+          await sip.dial({
             roomName,
-            metadata,
             phoneNumber,
             participantIdentity,
-            logger,
-          );
-          await waitForParticipantMicrophone(ctx.room, participantIdentity, logger);
-          session._roomIO?.setParticipant(participantIdentity);
+            participantName: (metadata.owner_name as string) ?? 'Property Owner',
+          });
+          logger.info('[CALL] worker.entry:wait_microphone');
+          await sip.waitForMicrophone(ctx.room, participantIdentity);
+          logger.info('[CALL] worker.entry:bind_participant');
+          callSession.setParticipant(participantIdentity);
+          logger.info('[CALL] worker.entry:outbound_ready');
         } catch (error) {
-          logger.error(`Outbound call setup failed: ${error}`);
+          logger.error(`[CALL] worker.entry:outbound_fail error=${error}`);
           ctx.shutdown();
           return;
         }
       } else if (!isLocalTest && phoneNumber) {
-        logger.warn('phone_number provided but SIP_OUTBOUND_TRUNK_ID is not configured');
+        logger.warn('[CALL] worker.entry:skip_dial reason=missing_SIP_OUTBOUND_TRUNK_ID');
       }
 
-      await new Promise<void>((resolve) => {
-        session.on(voice.AgentSessionEventTypes.Close, () => {
-          logger.info('[CALL] session:closed');
-          try {
-            const report = ctx.makeSessionReport(session);
-            if (report.audioRecordingPath) {
-              logger.info(`[CALL] recording:saved path=${report.audioRecordingPath}`);
-            }
-          } catch (error) {
-            logger.warn(`Could not create session report: ${error}`);
-          }
-          resolve();
-        });
-      });
+      logger.info('[CALL] worker.entry:wait_until_closed');
+      await callSession.waitUntilClosed();
+      logger.info('[CALL] worker.entry:end');
     },
   };
 }
 
-function attachSessionDebugLogging(
-  session: voice.AgentSession,
-  logger: ReturnType<typeof log>,
-  isOutboundCall: boolean,
-): void {
-  let agentState: voice.AgentState = 'initializing';
-  let turnCommitTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const clearTurnCommitTimer = () => {
-    if (turnCommitTimer) {
-      clearTimeout(turnCommitTimer);
-      turnCommitTimer = undefined;
-    }
-  };
-
-  const canCommitUserTurn = () =>
-    agentState !== 'thinking' && agentState !== 'speaking';
-
-  session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
-    agentState = ev.newState;
-    if (ev.newState === 'thinking' || ev.newState === 'speaking') {
-      clearTurnCommitTimer();
-    }
-  });
-
-  session.on(voice.AgentSessionEventTypes.Error, (ev) => {
-    logger.error({ error: ev.error }, '[CALL] session:error');
-  });
-
-  session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
-    if (!isOutboundCall || !ev.isFinal || !ev.transcript.trim()) {
-      return;
-    }
-
-    logger.info(`[CALL] stt:final transcript="${ev.transcript}"`);
-    clearTurnCommitTimer();
-    turnCommitTimer = setTimeout(() => {
-      turnCommitTimer = undefined;
-      if (canCommitUserTurn()) {
-        logger.info('[CALL] turn:commit');
-        session.commitUserTurn();
-      }
-    }, 900);
-  });
-}
-
+/** Layman: unpacks the JSON bag LiveKit attached to this job (phone, owner, property). */
 function parseMetadata(raw: string): CallMetadata {
   if (!raw) return {};
   try {
     return JSON.parse(raw) as CallMetadata;
   } catch {
-    log().warn('Failed to parse job metadata as JSON');
+    log().warn('[CALL] worker.parseMetadata:fail');
     return {};
   }
 }
 
+/** Layman: fake property details used only for local console testing. */
 function getConsoleTestMetadata(): CallMetadata {
   return {
     job_id: 'console-test-job',
@@ -196,125 +150,4 @@ function getConsoleTestMetadata(): CallMetadata {
     city: 'Bangalore',
     company_name: 'Gullynest',
   };
-}
-
-async function waitForParticipantMicrophone(
-  room: Room,
-  participantIdentity: string,
-  logger: ReturnType<typeof log>,
-  timeoutMs = 20_000,
-): Promise<void> {
-  const hasMicTrack = (participant: RemoteParticipant): boolean => {
-    for (const publication of participant.trackPublications.values()) {
-      if (publication.source === TrackSource.SOURCE_MICROPHONE) {
-        if (!publication.subscribed) {
-          publication.setSubscribed(true);
-        }
-        return publication.track !== undefined;
-      }
-    }
-    return false;
-  };
-
-  const existing = room.remoteParticipants.get(participantIdentity);
-  if (existing && hasMicTrack(existing)) {
-    logger.info('[CALL] microphone:ready');
-    return;
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Timed out waiting for microphone track from ${participantIdentity}`));
-    }, timeoutMs);
-
-    const onPublished = (publication: RemoteTrackPublication, participant: RemoteParticipant) => {
-      if (
-        participant.identity === participantIdentity &&
-        publication.source === TrackSource.SOURCE_MICROPHONE
-      ) {
-        publication.setSubscribed(true);
-      }
-    };
-
-    const onSubscribed = (
-      _track: RemoteTrack,
-      publication: RemoteTrackPublication,
-      participant: RemoteParticipant,
-    ) => {
-      if (
-        participant.identity === participantIdentity &&
-        publication.source === TrackSource.SOURCE_MICROPHONE
-      ) {
-        logger.info('[CALL] microphone:ready');
-        cleanup();
-        resolve();
-      }
-    };
-
-    const cleanup = () => {
-      clearTimeout(timer);
-      room.off(RoomEvent.TrackPublished, onPublished);
-      room.off(RoomEvent.TrackSubscribed, onSubscribed);
-    };
-
-    room.on(RoomEvent.TrackPublished, onPublished);
-    room.on(RoomEvent.TrackSubscribed, onSubscribed);
-
-    if (existing) {
-      for (const publication of existing.trackPublications.values()) {
-        if (publication.source === TrackSource.SOURCE_MICROPHONE) {
-          publication.setSubscribed(true);
-        }
-      }
-    }
-  });
-}
-
-/**
- * 
- * @param settings - The settings object containing the LiveKit URL, API key, and API secret. It is used to create a new SipClient instance.
- * @param roomName - The name of the room to place the outbound call in.
- * @param metadata - The metadata object containing the property information.
- * @param phoneNumber - The phone number to place the outbound call to.
- * @param participantIdentity - The identity of the participant to place the outbound call to.
- * @param logger - The logger object to use for logging.
- */
-async function placeOutboundCall(
-  settings: Settings,
-  roomName: string,
-  metadata: CallMetadata,
-  phoneNumber: string,
-  participantIdentity: string,
-  logger: ReturnType<typeof log>,
-): Promise<void> {
-  const masked =
-    phoneNumber.length > 4
-      ? `${'*'.repeat(phoneNumber.length - 4)}${phoneNumber.slice(-4)}`
-      : '****';
-
-  logger.info(`[CALL] dialing number=${masked}`);
-
-  const sip = new SipClient(
-    settings.livekitUrl,
-    settings.livekitApiKey,
-    settings.livekitApiSecret,
-  );
-
-  try {
-    await sip.createSipParticipant(
-      settings.sipOutboundTrunkId,
-      phoneNumber,
-      roomName,
-      {
-        participantIdentity,
-        participantName: (metadata.owner_name as string) ?? 'Property Owner',
-        waitUntilAnswered: true,
-      },
-    );
-    logger.info('[CALL] answered');
-  } catch (error) {
-    logger.error(`Outbound call failed: ${error}`);
-    throw error;
-  }
 }
