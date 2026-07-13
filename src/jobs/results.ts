@@ -53,7 +53,7 @@ export class CallResultStore {
 export function buildCallResult(params: {
   jobId: string;
   propertyAvailable: YesNoAnswer;
-  findTenants: YesNoAnswer;
+  findTenants?: YesNoAnswer;
   language?: string;
   summary?: string;
   metadata?: Record<string, unknown>;
@@ -62,7 +62,7 @@ export function buildCallResult(params: {
     jobId: params.jobId,
     status: 'completed',
     propertyStillAvailable: params.propertyAvailable,
-    gullynestShouldFindTenants: params.findTenants,
+    gullynestShouldFindTenants: params.findTenants ?? 'not_asked',
     conversationLanguage: params.language,
     transcriptSummary: params.summary,
     rawMetadata: params.metadata ?? {},
