@@ -1,11 +1,13 @@
 import { AutoSubscribe, type JobContext, log, voice } from '@livekit/agents';
-import { callDebug, callError, callInfo, callWarn } from './call-logger.js';
-import { LiveKitCallSession } from '../adapters/livekit-call-session.js';
+import { LiveKitCallSession, OWNER_OPENING_WAIT_MS } from '../adapters/livekit-call-session.js';
 import { LiveKitSipAdapter } from '../adapters/livekit-sip-adapter.js';
 import { SarvamVoicePipeline } from '../adapters/sarvam-voice-pipeline.js';
 import type { VoicePipelineProvider } from '../adapters/voice-pipeline.js';
+import { buildOpeningGreeting } from '../agents/property-availability/prompts.js';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
+import { callDebug, callError, callInfo, callWarn } from './call-logger.js';
+import { LanguageManager } from './language-manager.js';
 
 export type CallMetadata = Record<string, unknown>;
 
@@ -35,7 +37,6 @@ export function createWorkerConfig(
   return {
     entry: async (ctx: JobContext) => {
       const settings = options.settings ?? getSettings();
-      console.log('settings', settings);
       const logger = log().child({ room: ctx.room.name });
       const metadata = parseMetadata(ctx.job.metadata);
 
@@ -66,7 +67,10 @@ export function createWorkerConfig(
       const participantIdentity = `owner-${effectiveMetadata.property_id ?? 'unknown'}`;
       const isOutboundCall = !isLocalTest && !!phoneNumber;
 
-      callDebug(`[CALL] worker.entry:config outbound=${isOutboundCall} identity=${participantIdentity}`, logger);
+      callDebug(
+        `[CALL] worker.entry:config outbound=${isOutboundCall} identity=${participantIdentity}`,
+        logger,
+      );
 
       if (isOutboundCall) {
         callDebug('[CALL] worker.entry:connect_room', logger);
@@ -111,6 +115,24 @@ export function createWorkerConfig(
           await sip.waitForMicrophone(ctx.room, participantIdentity);
           callDebug('[CALL] worker.entry:bind_participant', logger);
           callSession.setParticipant(participantIdentity);
+
+          // Max 2.5s silence after connect → introduce Gullynest (in preferred/detected language).
+          const openingParams = {
+            companyName:
+              (effectiveMetadata.company_name as string) ?? settings.companyName,
+            ownerName: (effectiveMetadata.owner_name as string) ?? 'Sir/Madam',
+            propertyAddress:
+              (effectiveMetadata.property_address as string) ?? 'your property',
+          };
+          const preferredLanguage =
+            LanguageManager.normalizeLanguageCode(
+              effectiveMetadata.preferred_language as string | undefined,
+            ) ?? 'en-IN';
+          callSession.armOpeningGreeting({
+            waitMs: OWNER_OPENING_WAIT_MS,
+            preferredLanguage,
+            buildText: (language) => buildOpeningGreeting(openingParams, language),
+          });
           callDebug('[CALL] worker.entry:outbound_ready', logger);
         } catch (error) {
           callError(`[CALL] worker.entry:outbound_fail error=${error}`, logger);
@@ -118,7 +140,10 @@ export function createWorkerConfig(
           return;
         }
       } else if (!isLocalTest && phoneNumber) {
-        callWarn('[CALL] worker.entry:skip_dial reason=missing_SIP_OUTBOUND_TRUNK_ID', logger);
+        callWarn(
+          '[CALL] worker.entry:skip_dial reason=missing_SIP_OUTBOUND_TRUNK_ID',
+          logger,
+        );
       }
 
       callDebug('[CALL] worker.entry:wait_until_closed', logger);

@@ -68,13 +68,14 @@ class PropertyAvailabilityAgent extends voice.Agent {
 
   /**
    * Layman: called when the agent joins the call room.
-   * On real phone calls we wait for the owner to say hello first.
+   * On real phone calls we do NOT speak yet — worker arms a 1s silence timer
+   * after the mic is ready (see LiveKitCallSession.armOpeningGreeting).
    */
   async onEnter(): Promise<void> {
     const phone = this.state.callMetadata.phone_number;
 
     if (phone) {
-      callDebug('[CALL] agent.onEnter:waiting_for_owner');
+      callDebug('[CALL] agent.onEnter:defer_opening_to_session');
       return;
     }
 
@@ -82,7 +83,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
     this.session.generateReply({
       instructions:
         `Greet ${this.state.ownerName}, introduce yourself from ${this.state.companyName}, ` +
-        `and ask if the property is still available for rent.`,
+        'and ask if the property is still available for rent.',
     });
   }
 }
@@ -159,15 +160,17 @@ function buildPropertyTools(
 
     switchConversationLanguage: llm.tool({
       description:
-        'Switch spoken response language to match the property owner (en-IN, hi-IN, kn-IN).',
+        'Call this whenever the owner switches language (English, Hindi, or Kannada). ' +
+        'Updates TTS so the agent speaks in the new language.',
       parameters: z.object({
         language: z.enum(['en-IN', 'hi-IN', 'kn-IN']),
       }),
       execute: async ({ language }) => {
         callDebug(`[CALL] agent.tool.switchLanguage:start language=${language}`);
         state.languageManager.setLanguage(language);
+        lifecycle?.setSpokenLanguage(language, 'tool_switch');
         callDebug(`[CALL] agent.tool.switchLanguage:done language=${language}`);
-        return `Language set to ${language}`;
+        return `Language set to ${language}. Continue the conversation in this language.`;
       },
     }),
   };

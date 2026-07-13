@@ -91,12 +91,23 @@ export class LanguageManager {
     }
   }
 
+  /** Normalize STT / metadata codes like `hi`, `en`, `kn-IN` → supported LanguageCode. */
+  static normalizeLanguageCode(raw: string | null | undefined): LanguageCode | null {
+    if (!raw) return null;
+    const value = raw.trim().toLowerCase();
+    if (value.startsWith('hi')) return 'hi-IN';
+    if (value.startsWith('kn')) return 'kn-IN';
+    if (value.startsWith('en')) return 'en-IN';
+    return null;
+  }
+
   static multilingualInstructions(): string {
     return `
 Language rules (critical):
 - Listen to the property owner's language on every turn.
 - Automatically reply in the SAME language they use: English, Hindi (hi-IN), or Kannada (kn-IN).
-- If they switch languages mid-call, switch with them immediately.
+- If they switch languages mid-call (e.g. English → Hindi), switch with them immediately.
+- When you notice a language switch, call switchConversationLanguage with the new code.
 - Keep responses short and natural for phone calls (1-2 sentences).
 - Accept yes/no answers in any supported language:
   * English: yes / no

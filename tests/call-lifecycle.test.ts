@@ -135,3 +135,25 @@ describe('SarvamVoicePipeline', () => {
     expect(bundle.tts).toBeTruthy();
   });
 });
+
+describe('opening greeting helper', () => {
+  it('builds English / Hindi / Kannada intros', async () => {
+    const { buildOpeningGreeting } = await import(
+      '../src/agents/property-availability/prompts.js'
+    );
+    const params = {
+      companyName: 'Gullynest',
+      ownerName: 'Devansh',
+      propertyAddress: '42, Indiranagar',
+    };
+    const en = buildOpeningGreeting(params, 'en-IN');
+    const hi = buildOpeningGreeting(params, 'hi-IN');
+    const kn = buildOpeningGreeting(params, 'kn-IN');
+    expect(en).toContain('Gullynest');
+    expect(en).toContain('still available');
+    expect(hi).toContain('नमस्ते');
+    expect(hi).toContain('Gullynest');
+    expect(kn).toContain('ನಮಸ್ಕಾರ');
+    expect(kn).toContain('Gullynest');
+  });
+});

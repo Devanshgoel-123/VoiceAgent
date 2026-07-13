@@ -1,13 +1,38 @@
 import { getJobContext, type JobContext, log, voice } from '@livekit/agents';
 import { callDebug, callError, callWarn } from '../core/call-logger.js';
+import {
+  LanguageManager,
+  type LanguageCode,
+} from '../core/language-manager.js';
+import { applySpokenLanguage } from './spoken-language.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
 export const DEFAULT_GOODBYE_TEXT = 'Thank you for confirming. Have a great day!';
+
+export function goodbyeForLanguage(language: LanguageCode): string {
+  if (language === 'hi-IN') {
+    return 'पुष्टि करने के लिए धन्यवाद। आपका दिन शुभ हो!';
+  }
+  if (language === 'kn-IN') {
+    return 'ದೃಢೀಕರಿಸಿದಕ್ಕಾಗಿ ಧನ್ಯವಾದಗಳು. ನಿಮಗೆ ಶುಭ ದಿನವಾಗಲಿ!';
+  }
+  return DEFAULT_GOODBYE_TEXT;
+}
 export const GOODBYE_PLAYOUT_TIMEOUT_MS = 4000;
 /** Leave the tool stack, then interrupt any stuck post-tool TTS and hang up. */
 export const HANGUP_DEFER_MS = 300;
 /** If session Close never fires after shutdown, delete the room anyway. */
 export const CLOSE_FALLBACK_TIMEOUT_MS = 1500;
+
+/** How long to wait for the owner to speak after the call connects before we introduce ourselves. */
+export const OWNER_OPENING_WAIT_MS = 2_500;
+/**
+ * Outbound endpointing delay (ms) after STT thinks the user stopped talking.
+ * Lower = faster replies; too low risks cutting the owner off mid-sentence.
+ */
+export const OUTBOUND_ENDPOINTING_MIN_MS = 250;
+/** Fallback commit after a final STT transcript if LiveKit has not ended the turn yet. */
+export const TURN_COMMIT_FALLBACK_MS = 250;
 
 export type CallMetadata = Record<string, unknown>;
 
@@ -18,6 +43,21 @@ export interface CallLifecycle {
    * never completes when post-tool TTS hangs in "speaking".
    */
   scheduleHangup(): void;
+
+  /**
+   * Switch TTS (+ tracked language) so greeting/replies match the owner.
+   * Safe to call on every turn; no-ops when language is unchanged.
+   */
+  setSpokenLanguage(language: LanguageCode, reason?: string): void;
+}
+
+export interface OpeningGreetingOptions {
+  /** Max silence after mic is ready before the agent introduces itself. */
+  waitMs?: number;
+  /** Fallback language when the owner stays silent (job preferred_language or en-IN). */
+  preferredLanguage?: LanguageCode;
+  /** Build the spoken opening line for a detected/preferred language. */
+  buildText: (language: LanguageCode) => string;
 }
 
 export interface LiveKitCallSessionOptions {
@@ -48,6 +88,17 @@ export class LiveKitCallSession implements CallLifecycle {
   private closeResolved = false;
   private resolveClose?: () => void;
   private closePromise?: Promise<void>;
+  private openingTimer?: ReturnType<typeof setTimeout>;
+  private openingArmed = false;
+  private openingGreeted = false;
+  /** Owner started speaking during opening; wait for final transcript to pick language. */
+  private pendingOwnerLanguageGreeting = false;
+  private skipNextTurnCommit = false;
+  private openingBuildText?: (language: LanguageCode) => string;
+  private preferredOpeningLanguage: LanguageCode = 'en-IN';
+  private readonly languageManager = new LanguageManager('en-IN');
+  /** Last language pushed into Sarvam TTS (avoid redundant updateOptions). */
+  private appliedTtsLanguage: LanguageCode | null = null;
 
   constructor(options: LiveKitCallSessionOptions) {
     this.ctx = options.jobContext;
@@ -56,7 +107,10 @@ export class LiveKitCallSession implements CallLifecycle {
     this.isOutboundCall = options.isOutboundCall;
     this.participantIdentity = options.participantIdentity;
     this.pipeline = options.pipeline;
-    callDebug(`[CALL] session.ctor outbound=${this.isOutboundCall} identity=${this.participantIdentity ?? 'none'}`, this.logger);
+    callDebug(
+      `[CALL] session.ctor outbound=${this.isOutboundCall} identity=${this.participantIdentity ?? 'none'}`,
+      this.logger,
+    );
   }
 
   /** Layman: create the conversation engine and wire STT/LLM/TTS into it. */
@@ -71,9 +125,13 @@ export class LiveKitCallSession implements CallLifecycle {
       vad: null,
       turnHandling: {
         turnDetection: 'stt',
-        endpointing: { minDelay: this.isOutboundCall ? 600 : 70 },
-        preemptiveGeneration: { enabled: !this.isOutboundCall },
+        endpointing: {
+          minDelay: this.isOutboundCall ? OUTBOUND_ENDPOINTING_MIN_MS : 70,
+        },
+        // Start drafting the reply before the user fully finishes — big latency win.
+        preemptiveGeneration: { enabled: true },
         interruption: {
+          // PSTN echo can false-trigger interruptions; keep disabled on phone.
           enabled: !this.isOutboundCall,
           discardAudioIfUninterruptible: this.isOutboundCall,
         },
@@ -122,6 +180,92 @@ export class LiveKitCallSession implements CallLifecycle {
   }
 
   /**
+   * Layman: after the phone is connected, wait briefly for "Hello?".
+   * If the owner stays silent, introduce Gullynest and ask availability (no LLM wait).
+   */
+  armOpeningGreeting(options: OpeningGreetingOptions): void {
+    if (!this.isOutboundCall) return;
+
+    this.clearOpeningGreeting('rearm');
+    const waitMs = options.waitMs ?? OWNER_OPENING_WAIT_MS;
+    this.openingArmed = true;
+    this.openingGreeted = false;
+    this.pendingOwnerLanguageGreeting = false;
+    this.openingBuildText = options.buildText;
+    this.preferredOpeningLanguage = options.preferredLanguage ?? 'en-IN';
+    this.languageManager.setLanguage(this.preferredOpeningLanguage);
+    // Pre-tune TTS for the silent-path greeting language.
+    this.setSpokenLanguage(this.preferredOpeningLanguage, 'opening_armed');
+
+    callDebug(
+      `[CALL] session.opening:armed waitMs=${waitMs} preferredLang=${this.preferredOpeningLanguage}`,
+      this.logger,
+    );
+
+    this.openingTimer = setTimeout(() => {
+      this.openingTimer = undefined;
+      if (
+        !this.openingArmed ||
+        this.hangupStarted ||
+        this.openingGreeted ||
+        this.pendingOwnerLanguageGreeting
+      ) {
+        callDebug('[CALL] session.opening:skip_timeout', this.logger);
+        return;
+      }
+      this.openingArmed = false;
+      this.speakOpeningGreeting(this.preferredOpeningLanguage, 'silence_timeout');
+    }, waitMs);
+  }
+
+  /**
+   * Layman: retune the agent's voice to English / Hindi / Kannada.
+   * Call this whenever we learn (or the owner switches) their language.
+   */
+  setSpokenLanguage(language: LanguageCode, reason = 'manual'): void {
+    const previous = this.languageManager.getCurrentLanguage();
+    this.languageManager.setLanguage(language);
+
+    if (this.appliedTtsLanguage === language) {
+      callDebug(
+        `[CALL] session.language:unchanged language=${language} reason=${reason}`,
+        this.logger,
+      );
+      return;
+    }
+
+    const speaker = applySpokenLanguage(this.pipeline.tts, language);
+    this.appliedTtsLanguage = language;
+    callDebug(
+      `[CALL] session.language:switched from=${previous} to=${language} speaker=${speaker} reason=${reason}`,
+      this.logger,
+    );
+  }
+
+  /** Speak the fixed multilingual intro once (TTS already set to that language). */
+  private speakOpeningGreeting(language: LanguageCode, reason: string): void {
+    if (this.openingGreeted || this.hangupStarted) return;
+    this.openingGreeted = true;
+    this.setSpokenLanguage(language, `opening_${reason}`);
+
+    const text =
+      this.openingBuildText?.(language) ??
+      `Hello, this is Gullynest. Is the property still available for rent?`;
+
+    callDebug(
+      `[CALL] session.opening:speak reason=${reason} language=${language} text="${text}"`,
+      this.logger,
+    );
+
+    try {
+      this.requireSession().say(text, { allowInterruptions: true });
+    } catch (error) {
+      callError(`[CALL] session.opening:say_fail error=${error}`, this.logger);
+    }
+  }
+
+
+  /**
    * Layman: thank the owner and hang up — scheduled after the availability tool.
    * We intentionally do not wait for the parent speech handle: after a tool-only
    * turn, LiveKit can sit in "speaking" forever with no playout completion.
@@ -132,6 +276,7 @@ export class LiveKitCallSession implements CallLifecycle {
       return;
     }
     this.hangupScheduled = true;
+    this.clearOpeningGreeting('hangup');
     callDebug(`[CALL] session.scheduleHangup:deferred_ms=${HANGUP_DEFER_MS}`, this.logger);
 
     setTimeout(() => {
@@ -149,6 +294,17 @@ export class LiveKitCallSession implements CallLifecycle {
   waitUntilClosed(): Promise<void> {
     callDebug('[CALL] session.waitUntilClosed:waiting', this.logger);
     return this.closePromise ?? Promise.resolve();
+  }
+
+  private clearOpeningGreeting(reason: string): void {
+    if (this.openingTimer) {
+      clearTimeout(this.openingTimer);
+      this.openingTimer = undefined;
+    }
+    if (this.openingArmed) {
+      this.openingArmed = false;
+      callDebug(`[CALL] session.opening:cancel reason=${reason}`, this.logger);
+    }
   }
 
   private attachTurnLogging(session: voice.AgentSession): void {
@@ -170,11 +326,15 @@ export class LiveKitCallSession implements CallLifecycle {
       callDebug(`[CALL] session.state ${ev.oldState} -> ${ev.newState}`, this.logger);
       if (ev.newState === 'thinking' || ev.newState === 'speaking') {
         clearTurnCommitTimer();
+        this.clearOpeningGreeting(`agent_state_${ev.newState}`);
       }
     });
 
     session.on(voice.AgentSessionEventTypes.SpeechCreated, (ev) => {
-      callDebug(`[CALL] session.speech_created id=${ev.speechHandle.id} source=${ev.source}`, this.logger);
+      callDebug(
+        `[CALL] session.speech_created id=${ev.speechHandle.id} source=${ev.source}`,
+        this.logger,
+      );
     });
 
     session.on(voice.AgentSessionEventTypes.Error, (ev) => {
@@ -182,11 +342,49 @@ export class LiveKitCallSession implements CallLifecycle {
     });
 
     session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
-      if (!this.isOutboundCall || !ev.isFinal || !ev.transcript.trim()) {
+      if (!this.isOutboundCall || !ev.transcript.trim()) {
+        return;
+      }
+
+      const previousLanguage = this.languageManager.getCurrentLanguage();
+      const fromStt = LanguageManager.normalizeLanguageCode(ev.language ?? undefined);
+      const fromText = this.languageManager.detectFromText(ev.transcript);
+      const language = fromStt ?? fromText.language;
+
+      callDebug(
+        `[CALL] session.language:detected language=${language} prev=${previousLanguage} sttLang=${ev.language ?? 'null'} final=${ev.isFinal} transcript="${ev.transcript}"`,
+        this.logger,
+      );
+
+      // Retune TTS whenever the owner’s language is known / changes mid-call.
+      this.setSpokenLanguage(language, ev.isFinal ? 'stt_final' : 'stt_interim');
+
+      // Opening window: cancel silence timer; on final transcript greet in their language.
+      if ((this.openingArmed || this.pendingOwnerLanguageGreeting) && !this.openingGreeted) {
+        if (this.openingArmed) {
+          this.clearOpeningGreeting('owner_spoke');
+          this.pendingOwnerLanguageGreeting = true;
+        }
+        if (ev.isFinal) {
+          this.pendingOwnerLanguageGreeting = false;
+          this.skipNextTurnCommit = true;
+          this.speakOpeningGreeting(language, 'owner_spoke');
+        }
+        return;
+      }
+
+      if (!ev.isFinal) {
         return;
       }
 
       callDebug(`[CALL] session.stt:final transcript="${ev.transcript}"`, this.logger);
+
+      if (this.skipNextTurnCommit) {
+        this.skipNextTurnCommit = false;
+        callDebug('[CALL] session.turn:commit_skipped reason=opening_greeting', this.logger);
+        return;
+      }
+
       clearTurnCommitTimer();
       turnCommitTimer = setTimeout(() => {
         turnCommitTimer = undefined;
@@ -196,7 +394,7 @@ export class LiveKitCallSession implements CallLifecycle {
         } else {
           callDebug(`[CALL] session.turn:commit_skipped state=${agentState}`, this.logger);
         }
-      }, 900);
+      }, TURN_COMMIT_FALLBACK_MS);
     });
   }
 
@@ -224,6 +422,7 @@ export class LiveKitCallSession implements CallLifecycle {
       return;
     }
     this.hangupStarted = true;
+    this.clearOpeningGreeting('goodbye');
 
     const session = this.requireSession();
 
@@ -234,13 +433,19 @@ export class LiveKitCallSession implements CallLifecycle {
       callWarn(`[CALL] session.goodbye:interrupt_fail error=${error}`, this.logger);
     }
 
-    // Let the force-interrupt settle before starting goodbye TTS.
     await sleep(150);
 
     try {
-      callDebug(`[CALL] session.goodbye:play_start text="${this.goodbyeText}"`, this.logger);
-      // allowInterruptions so we can force-cut if playout hangs before shutdown
-      const speech = session.say(this.goodbyeText, { allowInterruptions: true });
+      const language = this.languageManager.getCurrentLanguage();
+      this.setSpokenLanguage(language, 'goodbye');
+      const goodbyeText = this.goodbyeText === DEFAULT_GOODBYE_TEXT
+        ? goodbyeForLanguage(language)
+        : this.goodbyeText;
+      callDebug(
+        `[CALL] session.goodbye:play_start language=${language} text="${goodbyeText}"`,
+        this.logger,
+      );
+      const speech = session.say(goodbyeText, { allowInterruptions: true });
       const timedOut = await raceWithTimeout(
         speech.waitForPlayout(),
         GOODBYE_PLAYOUT_TIMEOUT_MS,
@@ -258,24 +463,26 @@ export class LiveKitCallSession implements CallLifecycle {
       callDebug('[CALL] session.goodbye:interrupt_before_shutdown', this.logger);
       session.interrupt({ force: true });
     } catch (error) {
-      callWarn(`[CALL] session.goodbye:interrupt_before_shutdown_fail error=${error}`, this.logger);
+      callWarn(
+        `[CALL] session.goodbye:interrupt_before_shutdown_fail error=${error}`,
+        this.logger,
+      );
     }
 
     await sleep(50);
 
-    // drain:false → force-interrupt path; avoids waiting forever on hung TTS playout.
     callDebug('[CALL] session.goodbye:shutdown_start drain=false', this.logger);
     session.shutdown({ drain: false, reason: 'availability confirmed' });
     callDebug('[CALL] session.goodbye:shutdown_requested', this.logger);
 
-    // Do not wait for Close — with outbound closeOnDisconnect:false, SIP stays up
-    // until the room is deleted. Delete immediately after shutdown.
     await this.finalizeHangup('after_shutdown');
 
-    // Safety net if finalize somehow raced / Close path still needed elsewhere.
     setTimeout(() => {
       if (this.closeResolved && this.roomDeleted) return;
-      callWarn(`[CALL] session.close:fallback_timeout ms=${CLOSE_FALLBACK_TIMEOUT_MS}`, this.logger);
+      callWarn(
+        `[CALL] session.close:fallback_timeout ms=${CLOSE_FALLBACK_TIMEOUT_MS}`,
+        this.logger,
+      );
       void this.finalizeHangup('close_fallback_timeout');
     }, CLOSE_FALLBACK_TIMEOUT_MS);
   }
@@ -283,7 +490,10 @@ export class LiveKitCallSession implements CallLifecycle {
   /** Delete room + shut down job. Idempotent hard hangup. */
   private async finalizeHangup(reason: string): Promise<void> {
     if (this.closeResolved) {
-      callDebug(`[CALL] session.finalizeHangup:skip already_done reason=${reason}`, this.logger);
+      callDebug(
+        `[CALL] session.finalizeHangup:skip already_done reason=${reason}`,
+        this.logger,
+      );
       return;
     }
     this.closeResolved = true;
@@ -297,7 +507,10 @@ export class LiveKitCallSession implements CallLifecycle {
         await this.ctx.deleteRoom();
         callDebug('[CALL] session.finalizeHangup:deleteRoom_done', this.logger);
       } catch (error) {
-        callError(`[CALL] session.finalizeHangup:deleteRoom_fail error=${error}`, this.logger);
+        callError(
+          `[CALL] session.finalizeHangup:deleteRoom_fail error=${error}`,
+          this.logger,
+        );
       }
     }
 
@@ -306,7 +519,10 @@ export class LiveKitCallSession implements CallLifecycle {
       if (session) {
         const report = this.ctx.makeSessionReport(session);
         if (report.audioRecordingPath) {
-          callDebug(`[CALL] session.finalizeHangup:recording path=${report.audioRecordingPath}`, this.logger);
+          callDebug(
+            `[CALL] session.finalizeHangup:recording path=${report.audioRecordingPath}`,
+            this.logger,
+          );
         }
       }
     } catch (error) {
