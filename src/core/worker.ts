@@ -31,7 +31,7 @@ export function createWorkerConfig(
       const logger = log().child({ room: ctx.room.name });
       const metadata = parseMetadata(ctx.job.metadata);
 
-      logger.info(`Job started — metadata keys: ${Object.keys(metadata).join(', ')}`);
+      logger.info(`[CALL] job:start id=${metadata.job_id ?? ctx.job.id}`);
 
       const isLocalTest = ctx.isFakeJob;
       const effectiveMetadata = isLocalTest && Object.keys(metadata).length === 0
@@ -55,7 +55,6 @@ export function createWorkerConfig(
 
       const agent = agentFactory(effectiveMetadata);
       const pipeline = new SarvamPipelineFactory(settings);
-      // 24kHz PCM TTS — mulaw 8kHz was causing silent/hung playouts on PSTN
       const bundle = pipeline.createPipelineBundle(undefined, false);
 
       const session = new voice.AgentSession({
@@ -112,10 +111,11 @@ export function createWorkerConfig(
 
       await new Promise<void>((resolve) => {
         session.on(voice.AgentSessionEventTypes.Close, () => {
+          logger.info('[CALL] session:closed');
           try {
             const report = ctx.makeSessionReport(session);
             if (report.audioRecordingPath) {
-              logger.info(`Call audio saved: ${report.audioRecordingPath}`);
+              logger.info(`[CALL] recording:saved path=${report.audioRecordingPath}`);
             }
           } catch (error) {
             logger.warn(`Could not create session report: ${error}`);
@@ -147,50 +147,26 @@ function attachSessionDebugLogging(
 
   session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
     agentState = ev.newState;
-    logger.info({ oldState: ev.oldState, newState: ev.newState }, 'Agent state');
     if (ev.newState === 'thinking' || ev.newState === 'speaking') {
       clearTurnCommitTimer();
     }
   });
 
-  session.on(voice.AgentSessionEventTypes.SpeechCreated, (ev) => {
-    logger.info({ speechId: ev.speechHandle.id, source: ev.source }, 'Agent speaking');
-  });
-
-  session.on(voice.AgentSessionEventTypes.FunctionToolsExecuted, (ev) => {
-    for (let i = 0; i < ev.functionCalls.length; i++) {
-      const call = ev.functionCalls[i];
-      const output = ev.functionCallOutputs[i];
-      logger.info(
-        {
-          tool: call?.name,
-          output: output?.output?.slice(0, 200),
-          isError: output?.isError,
-        },
-        'Tool finished',
-      );
-    }
-  });
-
   session.on(voice.AgentSessionEventTypes.Error, (ev) => {
-    logger.error({ error: ev.error }, 'Session error');
+    logger.error({ error: ev.error }, '[CALL] session:error');
   });
 
   session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
-    logger.info(
-      { transcript: ev.transcript, isFinal: ev.isFinal },
-      'User said',
-    );
-
     if (!isOutboundCall || !ev.isFinal || !ev.transcript.trim()) {
       return;
     }
 
+    logger.info(`[CALL] stt:final transcript="${ev.transcript}"`);
     clearTurnCommitTimer();
     turnCommitTimer = setTimeout(() => {
       turnCommitTimer = undefined;
       if (canCommitUserTurn()) {
-        logger.info({ transcript: ev.transcript }, 'Committing user turn (Sarvam END_SPEECH fallback)');
+        logger.info('[CALL] turn:commit');
         session.commitUserTurn();
       }
     }, 900);
@@ -242,7 +218,7 @@ async function waitForParticipantMicrophone(
 
   const existing = room.remoteParticipants.get(participantIdentity);
   if (existing && hasMicTrack(existing)) {
-    logger.info('SIP participant microphone track already available');
+    logger.info('[CALL] microphone:ready');
     return;
   }
 
@@ -270,7 +246,7 @@ async function waitForParticipantMicrophone(
         participant.identity === participantIdentity &&
         publication.source === TrackSource.SOURCE_MICROPHONE
       ) {
-        logger.info('SIP participant microphone track subscribed');
+        logger.info('[CALL] microphone:ready');
         cleanup();
         resolve();
       }
@@ -295,6 +271,15 @@ async function waitForParticipantMicrophone(
   });
 }
 
+/**
+ * 
+ * @param settings - The settings object containing the LiveKit URL, API key, and API secret. It is used to create a new SipClient instance.
+ * @param roomName - The name of the room to place the outbound call in.
+ * @param metadata - The metadata object containing the property information.
+ * @param phoneNumber - The phone number to place the outbound call to.
+ * @param participantIdentity - The identity of the participant to place the outbound call to.
+ * @param logger - The logger object to use for logging.
+ */
 async function placeOutboundCall(
   settings: Settings,
   roomName: string,
@@ -308,7 +293,7 @@ async function placeOutboundCall(
       ? `${'*'.repeat(phoneNumber.length - 4)}${phoneNumber.slice(-4)}`
       : '****';
 
-  logger.info(`Placing outbound SIP call to ${masked}`);
+  logger.info(`[CALL] dialing number=${masked}`);
 
   const sip = new SipClient(
     settings.livekitUrl,
@@ -327,7 +312,7 @@ async function placeOutboundCall(
         waitUntilAnswered: true,
       },
     );
-    logger.info('Outbound call answered');
+    logger.info('[CALL] answered');
   } catch (error) {
     logger.error(`Outbound call failed: ${error}`);
     throw error;

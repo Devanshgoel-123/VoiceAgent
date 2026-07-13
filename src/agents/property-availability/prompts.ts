@@ -24,15 +24,14 @@ CONVERSATION FLOW:
 1. Greet ${params.ownerName} and say you are calling from ${params.companyName}.
 2. Ask if the property is still available. Wait for a clear yes or no.
 3. Call recordPropertyAvailability with their answer.
-4. Say a brief thank-you (one short sentence).
-5. Call endCall to hang up.
+4. The tool will save the answer and hang up automatically.
 
 RULES:
 - Ask ONLY the availability question. Do not ask about visits, tenants, or anything else.
 - Never use square brackets. Say "${params.companyName}" plainly.
 - "Hello" and "hi" are greetings, not goodbye — keep going.
 - Keep the call under 1 minute.
-- After recordPropertyAvailability, thank them and call endCall. Do not ask more questions.
+- After calling recordPropertyAvailability, the call ends immediately.
 `.trim();
 }
 

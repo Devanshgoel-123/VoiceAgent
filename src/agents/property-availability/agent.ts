@@ -89,43 +89,39 @@ async function saveCallResult(state: AgentState, summary: string): Promise<void>
 
   await state.resultStore.save(result);
   state.resultSaved = true;
-  log().info(`Call completed — job ${state.jobId} summary: ${summary}`);
+  log().info(`[CALL] saveCallResult:done job=${state.jobId} result=${state.propertyAvailable}`);
 }
 
 function buildPropertyTools(state: AgentState) {
   return {
     recordPropertyAvailability: llm.tool({
       description:
-        'Record the owner yes/no answer about whether the property is still available for rent.',
+        'Record the owner yes/no answer about whether the property is still available for rent. ' +
+        'This tool saves the result and ends the call automatically.',
       parameters: z.object({
         isAvailable: z.boolean().describe('True if the property is still available'),
         ownerResponse: z.string().describe('Exact words the owner used'),
       }),
       execute: async ({ isAvailable, ownerResponse }) => {
+        log().info(`[CALL] recordPropertyAvailability:start answer=${ownerResponse}`);
         state.propertyAvailable = isAvailable ? 'yes' : 'no';
-        log().info(
-          `Job ${state.jobId} — property available: ${state.propertyAvailable} (owner said: ${ownerResponse})`,
-        );
 
-        return isAvailable
-          ? 'Recorded as available. Say a brief thank you, then call endCall.'
-          : 'Recorded as not available. Say a brief thank you, then call endCall.';
-      },
-    }),
-
-    endCall: llm.tool({
-      description: 'End the call after availability is recorded and you have thanked the owner.',
-      parameters: z.object({
-        summary: z.string().describe('One-line summary of the call outcome'),
-      }),
-      execute: async ({ summary }) => {
-        if (state.propertyAvailable === 'not_asked') {
-          return 'Cannot end yet — ask if the property is available first.';
-        }
-
+        const summary = isAvailable
+          ? 'Owner confirmed that the property is available.'
+          : 'Owner confirmed that the property is not available.';
         await saveCallResult(state, summary);
-        getJobContext().shutdown('call completed');
-        return 'Call ended.';
+
+        const ctx = getJobContext();
+        log().info(`[CALL] recordPropertyAvailability:hangup_start job=${state.jobId}`);
+        try {
+          // Deleting the room forcibly disconnects the SIP participant and ends the PSTN call.
+          await ctx.deleteRoom();
+          log().info(`[CALL] recordPropertyAvailability:hangup_done job=${state.jobId}`);
+        } catch (error) {
+          log().error(`[CALL] recordPropertyAvailability:hangup_error error=${error}`);
+        } finally {
+          ctx.shutdown('availability confirmed');
+        }
       },
     }),
 
