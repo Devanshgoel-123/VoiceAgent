@@ -119,6 +119,11 @@ Language rules (critical):
   }
 
   private detectLanguage(text: string): LanguageCode {
+    // Catch common Romanized speech before the generic Latin-script fallback.
+    // Example: "haan" is Hindi and "haudu" is Kannada even though both use A-Z.
+    if (this.matchesLanguageKeywords(text, 'hi-IN')) return 'hi-IN';
+    if (this.matchesLanguageKeywords(text, 'kn-IN')) return 'kn-IN';
+
     const kannadaChars = (text.match(KANNADA_RE) ?? []).length;
     const devanagariChars = (text.match(DEVANAGARI_RE) ?? []).length;
     const latinChars = (text.match(LATIN_RE) ?? []).length;
@@ -127,6 +132,18 @@ Language rules (critical):
     if (devanagariChars > kannadaChars && devanagariChars > 0) return 'hi-IN';
     if (latinChars > 0) return 'en-IN';
     return 'en-IN';
+  }
+
+  private matchesLanguageKeywords(
+    text: string,
+    language: 'hi-IN' | 'kn-IN',
+  ): boolean {
+    const tokens = new Set(text.match(/\p{L}+/gu) ?? []);
+    const keywords = [
+      ...STRONG_AFFIRMATIVE[language]!,
+      ...STRONG_NEGATIVE[language]!,
+    ];
+    return keywords.some((keyword) => tokens.has(keyword));
   }
 
   private resolveIntent(text: string): {

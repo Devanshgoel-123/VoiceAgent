@@ -1,6 +1,8 @@
 import 'dotenv/config';
 
 export type AppEnv = 'developer' | 'production';
+export type TtsProvider = 'sarvam' | 'elevenlabs';
+export type ElevenLabsTransport = 'http' | 'websocket';
 
 export interface Settings {
   /** `developer` enables verbose [CALL] stage logs; `production` keeps warn/error only. */
@@ -11,6 +13,12 @@ export interface Settings {
   livekitApiKey: string;
   livekitApiSecret: string;
   sarvamApiKey: string;
+  /** Which company generates agent speech. STT/LLM remain on Sarvam. */
+  ttsProvider: TtsProvider;
+  elevenLabsApiKey?: string;
+  elevenLabsVoiceId?: string;
+  elevenLabsModel: string;
+  elevenLabsTransport: ElevenLabsTransport;
   sipOutboundTrunkId: string;
   agentName: string;
   apiHost: string;
@@ -39,6 +47,24 @@ function parseBool(raw: string | undefined, fallback: boolean): boolean {
   return fallback;
 }
 
+function parseTtsProvider(raw: string | undefined): TtsProvider {
+  return raw?.trim().toLowerCase() === 'elevenlabs' ? 'elevenlabs' : 'sarvam';
+}
+
+function optionalRealValue(raw: string | undefined): string | undefined {
+  const value = raw?.trim();
+  if (!value || value === 'your_voice_id' || value.startsWith('your_')) {
+    return undefined;
+  }
+  return value;
+}
+
+function parseElevenLabsTransport(
+  raw: string | undefined,
+): ElevenLabsTransport {
+  return raw?.trim().toLowerCase() === 'websocket' ? 'websocket' : 'http';
+}
+
 let cachedSettings: Settings | null = null;
 
 export function getSettings(): Settings {
@@ -61,6 +87,14 @@ export function getSettings(): Settings {
     livekitApiKey: required('LIVEKIT_API_KEY'),
     livekitApiSecret: required('LIVEKIT_API_SECRET'),
     sarvamApiKey: required('SARVAM_API_KEY'),
+    ttsProvider: parseTtsProvider(process.env.TTS_PROVIDER),
+    elevenLabsApiKey: process.env.ELEVEN_API_KEY,
+    elevenLabsVoiceId: optionalRealValue(process.env.ELEVENLABS_VOICE_ID),
+    elevenLabsModel:
+      process.env.ELEVENLABS_MODEL ?? 'eleven_v3',
+    elevenLabsTransport: parseElevenLabsTransport(
+      process.env.ELEVENLABS_TRANSPORT,
+    ),
     sipOutboundTrunkId: process.env.SIP_OUTBOUND_TRUNK_ID ?? '',
     agentName: process.env.AGENT_NAME ?? 'gully-property-availability-agent',
     apiHost: process.env.API_HOST ?? '0.0.0.0',

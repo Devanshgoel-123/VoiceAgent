@@ -129,7 +129,10 @@ describe('SarvamVoicePipeline', () => {
     );
     const { getSettings } = await import('../src/config/settings.js');
     const pipeline = new SarvamVoicePipeline(getSettings());
-    const bundle = pipeline.createBundle({ telephony: false });
+    const bundle = pipeline.createBundle({
+      telephony: false,
+      ttsProvider: 'sarvam',
+    });
     expect(bundle.stt).toBeTruthy();
     expect(bundle.llm).toBeTruthy();
     expect(bundle.tts).toBeTruthy();

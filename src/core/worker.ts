@@ -81,8 +81,22 @@ export function createWorkerConfig(
       // PCM TTS for outbound: LiveKit resamples for SIP more reliably than mulaw 8kHz.
       callDebug('[CALL] worker.entry:create_pipeline', logger);
       const pipelineProvider = options.pipeline ?? new SarvamVoicePipeline(settings);
-      const pipeline = pipelineProvider.createBundle({ telephony: false });
-      callDebug('[CALL] worker.entry:pipeline_ready', logger);
+      const requestedTtsProvider = String(
+        effectiveMetadata.tts_provider ?? '',
+      ).toLowerCase();
+      const ttsProvider =
+        requestedTtsProvider === 'elevenlabs' ||
+        requestedTtsProvider === 'sarvam'
+          ? requestedTtsProvider
+          : settings.ttsProvider;
+      const pipeline = pipelineProvider.createBundle({
+        telephony: false,
+        ttsProvider,
+      });
+      callDebug(
+        `[CALL] worker.entry:pipeline_ready ttsProvider=${ttsProvider}`,
+        logger,
+      );
 
       callDebug('[CALL] worker.entry:create_call_session', logger);
       const callSession = new LiveKitCallSession({

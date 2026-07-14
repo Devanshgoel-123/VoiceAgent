@@ -1,5 +1,7 @@
 import * as openai from '@livekit/agents-plugin-openai';
 import * as sarvam from '@livekit/agents-plugin-sarvam';
+import * as elevenlabs from '@livekit/agents-plugin-elevenlabs';
+import { tokenize, tts } from '@livekit/agents';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
 import { callDebug } from '../core/call-logger.js';
@@ -28,20 +30,27 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
       options.language ?? (this.settings.defaultLanguage as LanguageCode);
     const langMgr = new LanguageManager(language);
     const telephony = options.telephony ?? false;
+    const ttsProvider = options.ttsProvider ?? this.settings.ttsProvider;
 
-    callDebug(`[CALL] sarvam.createBundle:start language=${language} telephony=${telephony}`);
+    callDebug(
+      `[CALL] pipeline.createBundle:start language=${language} telephony=${telephony} ttsProvider=${ttsProvider}`,
+    );
 
     const bundle = {
       stt: this.createStt('unknown'),
       llm: this.createLlm(),
-      tts: this.createTts({
-        language: langMgr.getCurrentLanguage(),
-        speaker: langMgr.getTtsSpeaker(),
-        telephony,
-      }),
+      tts:
+        ttsProvider === 'elevenlabs'
+          ? this.createElevenLabsTts(langMgr.getCurrentLanguage())
+          : this.createSarvamTts({
+              language: langMgr.getCurrentLanguage(),
+              speaker: langMgr.getTtsSpeaker(),
+              telephony,
+            }),
+      ttsProvider,
     };
 
-    callDebug('[CALL] sarvam.createBundle:done');
+    callDebug(`[CALL] pipeline.createBundle:done ttsProvider=${ttsProvider}`);
     return bundle;
   }
 
@@ -68,7 +77,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
   }
 
   /** Layman: text-to-speech — turns the agent's written reply into spoken audio. */
-  private createTts(options: {
+  private createSarvamTts(options: {
     language: LanguageCode;
     speaker: string;
     telephony: boolean;
@@ -87,5 +96,59 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     }
 
     return new sarvam.TTS(ttsOptions);
+  }
+
+  /** Natural multilingual speech from ElevenLabs; Sarvam still handles STT + LLM. */
+  private createElevenLabsTts(language: LanguageCode) {
+    if (!this.settings.elevenLabsApiKey) {
+      throw new Error(
+        'ELEVEN_API_KEY is required when TTS_PROVIDER=elevenlabs',
+      );
+    }
+
+    callDebug(
+      `[CALL] elevenlabs.createTts model=${this.settings.elevenLabsModel} transport=${this.settings.elevenLabsTransport} language=${language} voiceId=${this.settings.elevenLabsVoiceId ?? 'default'}`,
+    );
+
+    const elevenLabsTts = new elevenlabs.TTS({
+      apiKey: this.settings.elevenLabsApiKey,
+      model: this.settings.elevenLabsModel,
+      voiceId: this.settings.elevenLabsVoiceId,
+      language,
+      encoding: 'pcm_16000',
+      autoMode: true,
+      voiceSettings: {
+        stability: 0.45,
+        similarity_boost: 0.8,
+        style: 0.2,
+        use_speaker_boost: true,
+      },
+    });
+
+    if (
+      this.settings.elevenLabsTransport === 'websocket' &&
+      this.settings.elevenLabsModel !== 'eleven_v3'
+    ) {
+      return elevenLabsTts;
+    }
+
+    // The ElevenLabs multi-context WebSocket can return audio without the final
+    // marker expected by plugin 1.5.1, then close with 1006. Eleven v3 also
+    // rejects WebSocket entirely. StreamAdapter feeds complete sentences to
+    // synthesize(), which uses the reliable HTTP streaming endpoint.
+    // Forward updateOptions so mid-call language switching still reaches the
+    // underlying ElevenLabs instance.
+    callDebug(
+      `[CALL] elevenlabs.createTts:transport=http_sentence_stream reason=${this.settings.elevenLabsModel === 'eleven_v3' ? 'eleven_v3_no_websocket' : 'configured_http'}`,
+    );
+    const adapter = new tts.StreamAdapter(
+      elevenLabsTts,
+      new tokenize.basic.SentenceTokenizer(),
+    );
+    return Object.assign(adapter, {
+      updateOptions: (
+        opts: Parameters<typeof elevenLabsTts.updateOptions>[0],
+      ) => elevenLabsTts.updateOptions(opts),
+    });
   }
 }

@@ -3,7 +3,7 @@
 **Modular Sarvam AI + LiveKit voice agent for Gullynest automated outbound calls.**  
 Calls property owners in **English, Hindi, or Kannada** and asks **one question**: is the property still available?
 
-Built with **TypeScript**, **LiveKit Agents (Node.js)**, **Twilio SIP** (PSTN), and **Sarvam AI** (Saaras STT, Sarvam LLM, Bulbul TTS).
+Built with **TypeScript**, **LiveKit Agents (Node.js)**, **Twilio SIP** (PSTN), **Sarvam AI** (Saaras STT + Sarvam LLM), and selectable **Sarvam or ElevenLabs TTS**.
 
 ---
 
@@ -28,7 +28,8 @@ Think of the call as three layers: **phone network**, **call room**, and **AI br
 |---------|--------|----------------|
 | **Twilio** | Phone network (PSTN) | Owns a real phone number and can place/receive calls on India’s public telephone network. LiveKit alone cannot dial `+91…` without a carrier. |
 | **LiveKit** | Real-time call room + agent runtime | Creates a WebRTC “room”, bridges SIP audio from Twilio into that room, runs your Agent Worker, and manages session lifecycle (listen / speak / hang up). |
-| **Sarvam AI** | Speech + language intelligence | Converts speech↔text and generates replies in Indian languages (en-IN / hi-IN / kn-IN). LiveKit orchestrates; Sarvam does the AI. |
+| **Sarvam AI** | Speech + language intelligence | Converts speech to text and generates reply text in Indian languages. It also provides Bulbul TTS when selected. |
+| **ElevenLabs** | Optional natural voice | Replaces only the TTS “mouth” for more natural speech. Sarvam remains the STT “ears” and LLM “brain”. |
 | **This repo (worker + API)** | Your product logic | Decides *what* to ask, *when* to hang up, and *where* to save results. |
 
 **In one line:** Twilio dials the phone → LiveKit carries the audio and runs the agent → Sarvam understands and speaks → our code runs the Gullynest script.
@@ -136,7 +137,7 @@ sequenceDiagram
     LK->>W: WebRTC audio
     W->>S: STT (Saaras) → transcript
     W->>S: LLM (Sarvam-105b) → reply / tool call
-    W->>S: TTS (Bulbul) → audio
+    W->>S: TTS (Sarvam Bulbul or ElevenLabs) → audio
     W->>LK: Play audio to room
     LK->>TW: SIP audio
     TW->>O: Owner hears agent
@@ -216,7 +217,7 @@ voiceAgent/
 | **AgentSession** | LiveKit object that wires STT/LLM/TTS, turn-taking, `say()`, tools, and shutdown. |
 | **STT** | *Speech-to-Text* — audio → transcript (Sarvam Saaras). |
 | **LLM** | *Large Language Model* — decides what to say / which tool to call (Sarvam-105b). |
-| **TTS** | *Text-to-Speech* — reply text → audio (Sarvam Bulbul). |
+| **TTS** | *Text-to-Speech* — reply text → audio (selectable Sarvam Bulbul or ElevenLabs). |
 | **VAD** | *Voice Activity Detection* — detects when someone is talking (we rely mainly on STT turn detection for phone). |
 | **Tool / function call** | Structured action the LLM can invoke (e.g. `recordPropertyAvailability`) instead of only chatting. |
 | **mulaw / PCM** | Audio encodings. PSTN often uses mulaw 8 kHz; this project uses PCM for outbound TTS and lets LiveKit resample for SIP reliability. |
@@ -286,7 +287,9 @@ curl -X POST http://localhost:8080/calls/property-availability \
     "property_address": "42, 5th Cross, Indiranagar, Bangalore",
     "bhk": "2 BHK",
     "rent_amount": 25000,
-    "city": "Bangalore"
+    "city": "Bangalore",
+    "preferred_language": "hi-IN",
+    "tts_provider": "elevenlabs"
   }'
 ```
 
@@ -299,7 +302,9 @@ npm run trigger:call -- \
   --property-id "PROP-001" \
   --address "42, 5th Cross, Indiranagar, Bangalore" \
   --bhk "2 BHK" \
-  --rent 25000
+  --rent 25000 \
+  --language hi-IN \
+  --tts-provider elevenlabs
 ```
 
 ### 7. Fetch call result
@@ -320,8 +325,18 @@ curl http://localhost:8080/calls/results/{job_id}
 
 - **STT**: Saaras v3 (auto language detection)
 - **LLM**: Sarvam-105b via OpenAI-compatible API (`https://api.sarvam.ai/v1`)
-- **TTS**: Bulbul v3 with per-language speaker mapping
+- **TTS**: `TTS_PROVIDER=sarvam` (Bulbul) or `elevenlabs` (multilingual voice)
 - **Tools**: `recordPropertyAvailability`, `switchConversationLanguage`
+
+### How response language is selected
+
+1. `preferred_language` is the fallback before the owner speaks.
+2. On every transcript, Sarvam STT's language code is preferred.
+3. If STT has no code, script/keywords are used (Devanagari → Hindi, Kannada
+   script → Kannada, and common Romanized words such as `haan` / `haudu`).
+4. A detected mid-call change updates both the LLM instructions and the active
+   TTS language. ElevenLabs keeps the configured voice while changing language;
+   Sarvam changes its language-specific speaker.
 
 ---
 
@@ -335,6 +350,11 @@ curl http://localhost:8080/calls/results/{job_id}
 | `LIVEKIT_API_KEY` | Yes | LiveKit API key |
 | `LIVEKIT_API_SECRET` | Yes | LiveKit API secret |
 | `SARVAM_API_KEY` | Yes | Sarvam AI API key |
+| `TTS_PROVIDER` | No | `sarvam` (default) or `elevenlabs` |
+| `ELEVEN_API_KEY` | For ElevenLabs | ElevenLabs API key |
+| `ELEVENLABS_VOICE_ID` | No | Voice ID selected from ElevenLabs Voice Library |
+| `ELEVENLABS_MODEL` | No | Default `eleven_v3` (English/Hindi/Kannada). Use `eleven_flash_v2_5` only for lower-latency English/Hindi. |
+| `ELEVENLABS_TRANSPORT` | No | `http` (reliable default) or `websocket` (lower latency, currently susceptible to close code 1006) |
 | `SIP_OUTBOUND_TRUNK_ID` | For phone calls | Outbound SIP trunk (`ST_...`) |
 | `AGENT_NAME` | No | Dispatch name (default: `gully-property-availability-agent`) |
 | `COMPANY_NAME` | No | Brand name (default: `Gullynest`) |

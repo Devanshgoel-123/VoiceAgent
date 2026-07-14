@@ -32,6 +32,7 @@ app.post('/calls/property-availability', async (req, res) => {
       rent_amount: rentAmount,
       city,
       preferred_language: preferredLanguage,
+      tts_provider: ttsProvider,
     } = req.body;
 
     if (!ownerName || !phoneNumber || !propertyId || !propertyAddress) {
@@ -54,6 +55,10 @@ app.post('/calls/property-availability', async (req, res) => {
       },
       companyName: settings.companyName,
       preferredLanguage,
+      metadata:
+        ttsProvider === 'sarvam' || ttsProvider === 'elevenlabs'
+          ? { tts_provider: ttsProvider }
+          : {},
     });
 
     const result = await dispatcher.dispatchPropertyAvailabilityCall(job);

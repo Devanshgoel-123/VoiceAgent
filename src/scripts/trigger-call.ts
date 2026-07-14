@@ -30,7 +30,7 @@ async function main() {
 
   if (!ownerName || !phone || !propertyId || !address) {
     console.error(
-      'Usage: npm run trigger:call -- --owner-name "Name" --phone "+91..." --property-id "ID" --address "Address" [--bhk "2 BHK"] [--rent 25000] [--city Bangalore] [--language en-IN|hi-IN|kn-IN]',
+      'Usage: npm run trigger:call -- --owner-name "Name" --phone "+91..." --property-id "ID" --address "Address" [--bhk "2 BHK"] [--rent 25000] [--city Bangalore] [--language en-IN|hi-IN|kn-IN] [--tts-provider sarvam|elevenlabs]',
     );
     process.exit(1);
   }
@@ -48,6 +48,10 @@ async function main() {
     },
     companyName: settings.companyName,
     preferredLanguage: args.language,
+    metadata:
+      args.tts_provider === 'sarvam' || args.tts_provider === 'elevenlabs'
+        ? { tts_provider: args.tts_provider }
+        : {},
   });
 
   const dispatcher = new CallJobDispatcher(settings);
