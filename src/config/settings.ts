@@ -19,6 +19,11 @@ export interface Settings {
   elevenLabsVoiceId?: string;
   elevenLabsModel: string;
   elevenLabsTransport: ElevenLabsTransport;
+  /**
+   * Playback loudness multiplier for agent TTS (0.1–1.0).
+   * ElevenLabs has no native volume API — lower values scale PCM samples before SIP.
+   */
+  ttsVolume: number;
   sipOutboundTrunkId: string;
   agentName: string;
   apiHost: string;
@@ -65,6 +70,13 @@ function parseElevenLabsTransport(
   return raw?.trim().toLowerCase() === 'websocket' ? 'websocket' : 'http';
 }
 
+/** Clamp agent voice loudness. Default 0.65 — quieter on PSTN than full boost. */
+function parseTtsVolume(raw: string | undefined): number {
+  const parsed = Number(raw ?? '0.65');
+  if (!Number.isFinite(parsed)) return 0.65;
+  return Math.min(1, Math.max(0.1, parsed));
+}
+
 let cachedSettings: Settings | null = null;
 
 export function getSettings(): Settings {
@@ -95,6 +107,7 @@ export function getSettings(): Settings {
     elevenLabsTransport: parseElevenLabsTransport(
       process.env.ELEVENLABS_TRANSPORT,
     ),
+    ttsVolume: parseTtsVolume(process.env.TTS_VOLUME),
     sipOutboundTrunkId: process.env.SIP_OUTBOUND_TRUNK_ID ?? '',
     agentName: process.env.AGENT_NAME ?? 'gully-property-availability-agent',
     apiHost: process.env.API_HOST ?? '0.0.0.0',

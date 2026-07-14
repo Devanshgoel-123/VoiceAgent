@@ -7,6 +7,7 @@ import { getSettings } from '../config/settings.js';
 import { callDebug } from '../core/call-logger.js';
 import type { LanguageCode } from '../core/language-manager.js';
 import { LanguageManager } from '../core/language-manager.js';
+import { withTtsVolumeGain } from './tts-volume.js';
 import type {
   VoicePipelineBundle,
   VoicePipelineOptions,
@@ -95,7 +96,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
       ttsOptions.sampleRate = this.settings.telephonySampleRate;
     }
 
-    return new sarvam.TTS(ttsOptions);
+    return withTtsVolumeGain(new sarvam.TTS(ttsOptions), this.settings.ttsVolume);
   }
 
   /** Natural multilingual speech from ElevenLabs; Sarvam still handles STT + LLM. */
@@ -107,23 +108,27 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     }
 
     callDebug(
-      `[CALL] elevenlabs.createTts model=${this.settings.elevenLabsModel} transport=${this.settings.elevenLabsTransport} language=${language} voiceId=${this.settings.elevenLabsVoiceId ?? 'default'}`,
+      `[CALL] elevenlabs.createTts model=${this.settings.elevenLabsModel} transport=${this.settings.elevenLabsTransport} language=${language} voiceId=${this.settings.elevenLabsVoiceId ?? 'default'} volume=${this.settings.ttsVolume}`,
     );
 
-    const elevenLabsTts = new elevenlabs.TTS({
-      apiKey: this.settings.elevenLabsApiKey,
-      model: this.settings.elevenLabsModel,
-      voiceId: this.settings.elevenLabsVoiceId,
-      language,
-      encoding: 'pcm_16000',
-      autoMode: true,
-      voiceSettings: {
-        stability: 0.45,
-        similarity_boost: 0.8,
-        style: 0.2,
-        use_speaker_boost: true,
-      },
-    });
+    const elevenLabsTts = withTtsVolumeGain(
+      new elevenlabs.TTS({
+        apiKey: this.settings.elevenLabsApiKey,
+        model: this.settings.elevenLabsModel,
+        voiceId: this.settings.elevenLabsVoiceId,
+        language,
+        encoding: 'pcm_16000',
+        autoMode: true,
+        voiceSettings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+          style: 0.1,
+          // Speaker boost makes TTS much louder on PSTN — keep off for calls.
+          use_speaker_boost: false,
+        },
+      }),
+      this.settings.ttsVolume,
+    );
 
     if (
       this.settings.elevenLabsTransport === 'websocket' &&

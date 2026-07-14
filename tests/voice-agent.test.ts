@@ -72,6 +72,21 @@ describe('TTS provider language updates', () => {
   });
 });
 
+describe('TTS volume gain', () => {
+  it('scales PCM samples down without clipping', async () => {
+    const { applyTtsVolumeGain } = await import('../src/adapters/tts-volume.js');
+    const data = new Int16Array([10000, -10000, 20000]);
+    const frame = {
+      data,
+      sampleRate: 16000,
+      channels: 1,
+      samplesPerChannel: 3,
+    };
+    applyTtsVolumeGain(frame as never, 0.5);
+    expect([...data]).toEqual([5000, -5000, 10000]);
+  });
+});
+
 describe('PropertyAvailabilityCallJob', () => {
   it('includes phone in dispatch metadata', () => {
     const job = createPropertyAvailabilityJob({
