@@ -83,12 +83,15 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     speaker: string;
     telephony: boolean;
   }) {
-    callDebug(`[CALL] sarvam.createTts model=bulbul:v3 language=${options.language} speaker=${options.speaker} telephony=${options.telephony}`);
+    callDebug(
+      `[CALL] sarvam.createTts model=bulbul:v3 language=${options.language} speaker=${options.speaker} telephony=${options.telephony} pace=${this.settings.ttsSpeed}`,
+    );
 
     const ttsOptions: sarvam.TTSV3Options = {
       model: 'bulbul:v3',
       targetLanguageCode: options.language,
       speaker: options.speaker,
+      pace: Math.min(2, Math.max(0.5, this.settings.ttsSpeed)),
     };
 
     if (options.telephony) {
@@ -107,8 +110,10 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
       );
     }
 
+    const speed = Math.min(1.2, Math.max(0.8, this.settings.ttsSpeed));
+
     callDebug(
-      `[CALL] elevenlabs.createTts model=${this.settings.elevenLabsModel} transport=${this.settings.elevenLabsTransport} language=${language} voiceId=${this.settings.elevenLabsVoiceId ?? 'default'} volume=${this.settings.ttsVolume}`,
+      `[CALL] elevenlabs.createTts model=${this.settings.elevenLabsModel} transport=${this.settings.elevenLabsTransport} language=${language} voiceId=${this.settings.elevenLabsVoiceId ?? 'default'} volume=${this.settings.ttsVolume} speed=${speed}`,
     );
 
     const elevenLabsTts = withTtsVolumeGain(
@@ -123,6 +128,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
           stability: 0.5,
           similarity_boost: 0.75,
           style: 0.1,
+          speed,
           // Speaker boost makes TTS much louder on PSTN — keep off for calls.
           use_speaker_boost: false,
         },

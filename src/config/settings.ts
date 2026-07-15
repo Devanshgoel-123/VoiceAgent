@@ -24,6 +24,11 @@ export interface Settings {
    * ElevenLabs has no native volume API — lower values scale PCM samples before SIP.
    */
   ttsVolume: number;
+  /**
+   * Speaking speed. 1.0 = normal.
+   * ElevenLabs clamps to 0.8–1.2; Sarvam pace clamps to 0.5–2.0.
+   */
+  ttsSpeed: number;
   sipOutboundTrunkId: string;
   agentName: string;
   apiHost: string;
@@ -77,6 +82,13 @@ function parseTtsVolume(raw: string | undefined): number {
   return Math.min(1, Math.max(0.1, parsed));
 }
 
+/** Speaking rate. Default 0.85 (slightly slower). Provider clamps applied at TTS create. */
+function parseTtsSpeed(raw: string | undefined): number {
+  const parsed = Number(raw ?? '0.85');
+  if (!Number.isFinite(parsed)) return 0.85;
+  return Math.min(2, Math.max(0.5, parsed));
+}
+
 let cachedSettings: Settings | null = null;
 
 export function getSettings(): Settings {
@@ -108,6 +120,7 @@ export function getSettings(): Settings {
       process.env.ELEVENLABS_TRANSPORT,
     ),
     ttsVolume: parseTtsVolume(process.env.TTS_VOLUME),
+    ttsSpeed: parseTtsSpeed(process.env.TTS_SPEED),
     sipOutboundTrunkId: process.env.SIP_OUTBOUND_TRUNK_ID ?? '',
     agentName: process.env.AGENT_NAME ?? 'gully-property-availability-agent',
     apiHost: process.env.API_HOST ?? '0.0.0.0',
