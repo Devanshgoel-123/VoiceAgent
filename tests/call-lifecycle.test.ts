@@ -173,12 +173,13 @@ describe('opening / closing LLM instructions', () => {
     const params = {
       companyName: 'Galinest',
       callerName: 'Aditi',
-      ownerName: 'Devansh',
       propertyAddress: '42, Indiranagar',
     };
 
     expect(buildOpeningInstructions(params, 'hi-IN')).toContain('Hindi');
     expect(buildOpeningInstructions(params, 'hi-IN')).toContain('Aditi');
+    expect(buildOpeningInstructions(params, 'hi-IN')).not.toContain('Devansh');
+    expect(buildOpeningInstructions(params, 'en-IN')).toContain('Do NOT use or invent the owner\'s name');
     expect(buildClosingInstructions('yes', 'kn-IN')).toContain('Kannada');
     expect(buildClosingInstructions('yes', 'kn-IN')).toContain(
       'as soon as we find a tenant',

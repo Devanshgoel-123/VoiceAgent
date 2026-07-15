@@ -14,7 +14,6 @@ import {
 interface PropertyWorkflowState {
   jobId: string;
   companyName: string;
-  ownerName: string;
   callMetadata: CallMetadata;
   propertyAvailable: YesNoAnswer;
   outcomeRecorded: boolean;
@@ -24,7 +23,6 @@ function createWorkflowState(metadata: CallMetadata): PropertyWorkflowState {
   return {
     jobId: (metadata.job_id as string) ?? 'unknown',
     companyName: (metadata.company_name as string) ?? 'Galynest',
-    ownerName: (metadata.owner_name as string) ?? 'Sir/Madam',
     callMetadata: metadata,
     propertyAvailable: 'not_asked',
     outcomeRecorded: false,
@@ -42,7 +40,6 @@ class PropertyAvailabilityAgent extends voice.Agent {
       instructions: buildPropertyAvailabilityInstructions({
         companyName: state.companyName,
         callerName: (metadata.caller_name as string) ?? settings.callerName,
-        ownerName: state.ownerName,
         propertyAddress: (metadata.property_address as string) ?? 'your property',
         propertyType: metadata.property_type as string | undefined,
         bhk: metadata.bhk as string | undefined,
@@ -60,8 +57,8 @@ class PropertyAvailabilityAgent extends voice.Agent {
 
     this.session.generateReply({
       instructions:
-        `Greet ${this.state.ownerName}, introduce yourself from ${this.state.companyName}, ` +
-        'and ask if the property is still available for rent.',
+        `Say Hi, introduce yourself as ${(this.state.callMetadata.caller_name as string) ?? getSettings().callerName} from ${this.state.companyName}, ` +
+        'and ask if the property is still available for rent. Do not use the owner\'s name.',
     });
   }
 }
