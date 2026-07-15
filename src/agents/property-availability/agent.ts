@@ -154,7 +154,7 @@ function buildPropertyTools(
         // Do not wait on speechHandle — after tool-only turns, TTS can sit
         // in "speaking" forever and the done callback never fires.
         callDebug('[CALL] agent.tool.recordPropertyAvailability:schedule_hangup');
-        lifecycle.scheduleHangup();
+        lifecycle.scheduleHangup(isAvailable ? 'yes' : 'no');
         callDebug('[CALL] agent.tool.recordPropertyAvailability:schedule_hangup_done');
       },
     }),

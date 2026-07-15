@@ -59,7 +59,7 @@ CONVERSATION FLOW:
 1. If the owner greets first (Hello / Haan / Namaste), say you are ${params.callerName} from ${params.companyName} in THEIR language, then ask availability.
 2. If you already introduced yourself (system opening), do not repeat the full intro — just continue naturally in their language.
 3. Wait for a clear yes or no, then call recordPropertyAvailability.
-4. Stop speaking. The system will thank them and hang up automatically.
+4. Stop speaking. The system will play the correct yes/no closing message and hang up automatically.
 
 RULES:
 - Ask ONLY the availability question. Do not ask about visits, tenants, or anything else.
@@ -71,7 +71,7 @@ RULES:
 - "Hello" and "hi" are greetings, not goodbye — keep going.
 - Keep the call under 1 minute.
 - After calling recordPropertyAvailability, do not speak and do not call any other tool.
-- Never say "thank you", "confirmed", or goodbye yourself — the system plays a short closing line.
+- Never say "thank you", "confirmed", or goodbye yourself — the system plays the full outcome-specific closing.
 `.trim();
 }
 

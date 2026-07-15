@@ -8,8 +8,29 @@ import {
 import { applySpokenLanguage } from './spoken-language.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
-/** Keep this short — slow TTS + long goodbye gets cut off mid-sentence on hangup. */
 export const DEFAULT_GOODBYE_TEXT = 'Thank you. Goodbye.';
+export type AvailabilityOutcome = 'yes' | 'no';
+
+/**
+ * Business closing spoken after recording availability.
+ * "dot com" is intentional: phone TTS pronounces it more clearly than ".com".
+ */
+export function availabilityClosing(outcome: AvailabilityOutcome): string {
+  if (outcome === 'yes') {
+    return (
+      'Thank you. The Gullynest team will continue searching for tenants. ' +
+      'We will call you again in one week to confirm the property availability. ' +
+      'We recommend saving this number as Gullynest Property Team. ' +
+      'Have a good day.'
+    );
+  }
+
+  return (
+    'Thank you for the information. We will update our records and will not disturb you again. ' +
+    'If you want to search for a tenant in the future, simply visit Gullynest dot com. ' +
+    'Have a good day.'
+  );
+}
 
 export function goodbyeForLanguage(language: LanguageCode): string {
   if (language === 'hi-IN') {
@@ -20,10 +41,10 @@ export function goodbyeForLanguage(language: LanguageCode): string {
   }
   return DEFAULT_GOODBYE_TEXT;
 }
-/** Covers ElevenLabs HTTP generation plus the full spoken goodbye (slower TTS needs headroom). */
-export const GOODBYE_PLAYOUT_TIMEOUT_MS = 5000;
+/** Long outcome-specific closing at slow TTS speed needs substantial playout headroom. */
+export const GOODBYE_PLAYOUT_TIMEOUT_MS = 20000;
 /** Base SIP flush after local playout; scaled up further when TTS_SPEED < 1. */
-export const GOODBYE_SIP_DRAIN_GRACE_MS = 500;
+export const GOODBYE_SIP_DRAIN_GRACE_MS = 1_500;
 /** Clear interrupted audio before starting goodbye TTS. */
 export const GOODBYE_POST_INTERRUPT_MS = 400;
 /** Leave the tool stack, then interrupt any stuck post-tool TTS and hang up. */
@@ -49,7 +70,7 @@ export interface CallLifecycle {
    * Idempotent. Does NOT wait for the parent tool speech handle — that handle often
    * never completes when post-tool TTS hangs in "speaking".
    */
-  scheduleHangup(): void;
+  scheduleHangup(outcome?: AvailabilityOutcome): void;
 
   /**
    * Switch TTS (+ tracked language) so greeting/replies match the owner.
@@ -91,6 +112,7 @@ export class LiveKitCallSession implements CallLifecycle {
   private session?: voice.AgentSession;
   private hangupStarted = false;
   private hangupScheduled = false;
+  private availabilityOutcome?: AvailabilityOutcome;
   private roomDeleted = false;
   private closeResolved = false;
   private resolveClose?: () => void;
@@ -281,11 +303,12 @@ export class LiveKitCallSession implements CallLifecycle {
    * We intentionally do not wait for the parent speech handle: after a tool-only
    * turn, LiveKit can sit in "speaking" forever with no playout completion.
    */
-  scheduleHangup(): void {
+  scheduleHangup(outcome?: AvailabilityOutcome): void {
     if (this.hangupStarted || this.hangupScheduled) {
       callDebug('[CALL] session.scheduleHangup:skip already_scheduled', this.logger);
       return;
     }
+    this.availabilityOutcome = outcome;
     this.hangupScheduled = true;
     this.clearOpeningGreeting('hangup');
     callDebug(`[CALL] session.scheduleHangup:deferred_ms=${HANGUP_DEFER_MS}`, this.logger);
@@ -451,9 +474,12 @@ export class LiveKitCallSession implements CallLifecycle {
     try {
       const language = this.languageManager.getCurrentLanguage();
       this.setSpokenLanguage(language, 'goodbye');
-      const goodbyeText = this.goodbyeText === DEFAULT_GOODBYE_TEXT
-        ? goodbyeForLanguage(language)
-        : this.goodbyeText;
+      const goodbyeText =
+        this.goodbyeText !== DEFAULT_GOODBYE_TEXT
+          ? this.goodbyeText
+          : this.availabilityOutcome
+            ? availabilityClosing(this.availabilityOutcome)
+            : goodbyeForLanguage(language);
       const ttsSpeed = getSettings().ttsSpeed;
       // Slower speech needs more SIP flush time after waitForPlayout returns.
       const sipDrainMs = Math.round(

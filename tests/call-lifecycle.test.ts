@@ -1,5 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
-import { HANGUP_DEFER_MS } from '../src/adapters/livekit-call-session.js';
+import {
+  availabilityClosing,
+  HANGUP_DEFER_MS,
+} from '../src/adapters/livekit-call-session.js';
+
+describe('availability closing messages', () => {
+  it('explains follow-up and number saving after a yes', () => {
+    const text = availabilityClosing('yes');
+    expect(text).toContain('continue searching for tenants');
+    expect(text).toContain('again in one week');
+    expect(text).toContain('saving this number as Gullynest Property Team');
+  });
+
+  it('explains record update and future website option after a no', () => {
+    const text = availabilityClosing('no');
+    expect(text).toContain('update our records');
+    expect(text).toContain('will not disturb you again');
+    expect(text).toContain('Gullynest dot com');
+  });
+});
 
 /**
  * Unit-test the hangup scheduling contract without LiveKit:
