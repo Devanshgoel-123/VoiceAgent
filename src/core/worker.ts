@@ -1,22 +1,24 @@
 import { AutoSubscribe, type JobContext, log, voice } from '@livekit/agents';
-import { LiveKitCallSession, OWNER_OPENING_WAIT_MS } from '../adapters/livekit-call-session.js';
+import { LiveKitCallSession } from '../adapters/livekit-call-session.js';
 import { LiveKitSipAdapter } from '../adapters/livekit-sip-adapter.js';
 import { SarvamVoicePipeline } from '../adapters/sarvam-voice-pipeline.js';
 import type { VoicePipelineProvider } from '../adapters/voice-pipeline.js';
 import { buildOpeningInstructions } from '../agents/property-availability/prompts.js';
+import { OWNER_OPENING_WAIT_MS } from '../config/call-config.js';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
 import {
-  safeMarkCallInProgress,
   safeMarkCallAnswered,
   safeMarkCallFailed,
+  safeMarkCallInProgress,
   safeMarkCallNoAnswer,
 } from '../db/call-log-repository.js';
 import { CallSessionRecord } from '../jobs/call-session-record.js';
-import { callDebug, callError, callInfo, callWarn } from './call-logger.js';
+import { callError, callInfo, callWarn } from './call-logger.js';
 import { LanguageManager } from './language-manager.js';
+import type { CallMetadata } from './types.js';
 
-export type CallMetadata = Record<string, unknown>;
+export type { CallMetadata };
 
 export type AgentFactory = (
   metadata: CallMetadata,
@@ -28,15 +30,11 @@ export interface WorkerConfig {
 }
 
 export interface WorkerConfigOptions {
-  telephony?: boolean;
   settings?: Settings;
   pipeline?: VoicePipelineProvider;
 }
 
-/**
- * Builds the LiveKit job entrypoint.
- * Layman: this is the "main script" that runs every time LiveKit assigns a call job.
- */
+/** LiveKit job entry: connect, dial, run the voice session, persist results. */
 export function createWorkerConfig(
   agentFactory: AgentFactory,
   options: WorkerConfigOptions = {},
@@ -55,13 +53,9 @@ export function createWorkerConfig(
           ? getConsoleTestMetadata(settings)
           : metadata;
 
-      if (isLocalTest) {
-        callDebug('[CALL] worker.entry:mode=local_console', logger);
-      }
-
       const roomName = ctx.room.name || ctx.job.room?.name;
       if (!roomName) {
-        callError('[CALL] worker.entry:fail reason=missing_room_name', logger);
+        callError('call: missing room name', logger);
         ctx.shutdown();
         return;
       }
@@ -70,38 +64,18 @@ export function createWorkerConfig(
       const participantIdentity = `owner-${effectiveMetadata.property_id ?? 'unknown'}`;
       const isOutboundCall = !isLocalTest && !!phoneNumber;
 
-      callDebug(
-        `[CALL] worker.entry:config outbound=${isOutboundCall} identity=${participantIdentity}`,
-        logger,
-      );
-
       if (isOutboundCall) {
-        callDebug('[CALL] worker.entry:connect_room', logger);
         await ctx.connect(undefined, AutoSubscribe.AUDIO_ONLY);
-        callDebug('[CALL] worker.entry:connect_room_done', logger);
       }
 
-      // PCM TTS for outbound: LiveKit resamples for SIP more reliably than mulaw 8kHz.
-      callDebug('[CALL] worker.entry:create_pipeline', logger);
       const pipelineProvider = options.pipeline ?? new SarvamVoicePipeline(settings);
-      const requestedTtsProvider = String(
-        effectiveMetadata.tts_provider ?? '',
-      ).toLowerCase();
+      const requestedTts = String(effectiveMetadata.tts_provider ?? '').toLowerCase();
       const ttsProvider =
-        requestedTtsProvider === 'elevenlabs' ||
-        requestedTtsProvider === 'sarvam'
-          ? requestedTtsProvider
+        requestedTts === 'elevenlabs' || requestedTts === 'sarvam'
+          ? requestedTts
           : settings.ttsProvider;
-      const pipeline = pipelineProvider.createBundle({
-        telephony: false,
-        ttsProvider,
-      });
-      callDebug(
-        `[CALL] worker.entry:pipeline_ready ttsProvider=${ttsProvider}`,
-        logger,
-      );
 
-      callDebug('[CALL] worker.entry:create_call_session', logger);
+      const pipeline = pipelineProvider.createBundle({ ttsProvider });
       const callRecord = new CallSessionRecord(effectiveMetadata);
       callRecord.markInProgress();
       await safeMarkCallInProgress(callRecord.jobId);
@@ -116,52 +90,45 @@ export function createWorkerConfig(
       });
 
       callSession.createSession();
-      callDebug('[CALL] worker.entry:create_agent', logger);
       const agent = agentFactory(effectiveMetadata, callSession);
-
-      callDebug('[CALL] worker.entry:session_start', logger);
       await callSession.start(agent);
-      callDebug('[CALL] worker.entry:session_start_done', logger);
 
       if (!isLocalTest && phoneNumber && settings.sipOutboundTrunkId) {
         try {
           const sip = new LiveKitSipAdapter(settings, logger);
-          callDebug('[CALL] worker.entry:dial_start', logger);
           await sip.dial({
             roomName,
             phoneNumber,
             participantIdentity,
             participantName: (metadata.owner_name as string) ?? 'Property Owner',
           });
-          callDebug('[CALL] worker.entry:wait_microphone', logger);
           await sip.waitForMicrophone(ctx.room, participantIdentity);
-          callDebug('[CALL] worker.entry:bind_participant', logger);
           callSession.setParticipant(participantIdentity);
           callRecord.markAnswered();
           await safeMarkCallAnswered(callRecord.jobId);
 
-          const openingParams = {
-            companyName:
-              (effectiveMetadata.company_name as string) ?? settings.companyName,
-            callerName:
-              (effectiveMetadata.caller_name as string) ?? settings.callerName,
-            ownerName: (effectiveMetadata.owner_name as string) ?? 'Owner',
-            propertyAddress:
-              (effectiveMetadata.property_address as string) ?? 'your property',
-          };
-          const preferredLanguage =
-            LanguageManager.normalizeLanguageCode(
-              effectiveMetadata.preferred_language as string | undefined,
-            ) ?? 'en-IN';
           callSession.armOpeningGreeting({
             waitMs: OWNER_OPENING_WAIT_MS,
-            preferredLanguage,
+            preferredLanguage:
+              LanguageManager.normalizeLanguageCode(
+                effectiveMetadata.preferred_language as string | undefined,
+              ) ?? 'en-IN',
             buildInstructions: (language) =>
-              buildOpeningInstructions(openingParams, language),
+              buildOpeningInstructions(
+                {
+                  companyName:
+                    (effectiveMetadata.company_name as string) ?? settings.companyName,
+                  callerName:
+                    (effectiveMetadata.caller_name as string) ?? settings.callerName,
+                  ownerName: (effectiveMetadata.owner_name as string) ?? 'Owner',
+                  propertyAddress:
+                    (effectiveMetadata.property_address as string) ?? 'your property',
+                },
+                language,
+              ),
           });
-          callDebug('[CALL] worker.entry:outbound_ready', logger);
         } catch (error) {
-          callError(`[CALL] worker.entry:outbound_fail error=${error}`, logger);
+          callError(`call: outbound failed ${error}`, logger);
           const message = String(error);
           if (message.includes('Timed out waiting for microphone')) {
             callRecord.markNoAnswer(message);
@@ -174,31 +141,24 @@ export function createWorkerConfig(
           return;
         }
       } else if (!isLocalTest && phoneNumber) {
-        callWarn(
-          '[CALL] worker.entry:skip_dial reason=missing_SIP_OUTBOUND_TRUNK_ID',
-          logger,
-        );
+        callWarn('call: skip dial — SIP_OUTBOUND_TRUNK_ID not set', logger);
       }
 
-      callDebug('[CALL] worker.entry:wait_until_closed', logger);
       await callSession.waitUntilClosed();
-      callDebug('[CALL] worker.entry:end', logger);
     },
   };
 }
 
-/** Layman: unpacks the JSON bag LiveKit attached to this job (phone, owner, property). */
 function parseMetadata(raw: string): CallMetadata {
   if (!raw) return {};
   try {
     return JSON.parse(raw) as CallMetadata;
   } catch {
-    callWarn('[CALL] worker.parseMetadata:fail');
+    callWarn('call: invalid job metadata JSON');
     return {};
   }
 }
 
-/** Layman: fake property details used only for local console testing. */
 function getConsoleTestMetadata(settings: Settings): CallMetadata {
   return {
     job_id: 'console-test-job',

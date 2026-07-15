@@ -1,5 +1,5 @@
 import { log } from '@livekit/agents';
-import { callDebug, callError } from '../core/call-logger.js';
+import { callError } from '../core/call-logger.js';
 import {
   RoomEvent,
   TrackSource,
@@ -18,10 +18,7 @@ export interface SipDialOptions {
   participantName?: string;
 }
 
-/**
- * Handles outbound phone dialing through LiveKit SIP → Twilio.
- * Layman: this is the "phone dialer" that rings the owner and waits for their mic.
- */
+/** Places outbound calls through LiveKit SIP → Twilio and waits for the owner's mic. */
 export class LiveKitSipAdapter {
   private readonly settings: Settings;
   private readonly logger: ReturnType<typeof log>;
@@ -31,15 +28,8 @@ export class LiveKitSipAdapter {
     this.logger = logger ?? log();
   }
 
-  /** Layman: place the actual phone call and wait until the owner picks up. */
+  /** Ring the owner and block until they pick up. */
   async dial(options: SipDialOptions): Promise<void> {
-    const masked =
-      options.phoneNumber.length > 4
-        ? `${'*'.repeat(options.phoneNumber.length - 4)}${options.phoneNumber.slice(-4)}`
-        : '****';
-
-    callDebug(`[CALL] sip.dial:start number=${masked} identity=${options.participantIdentity}`, this.logger);
-
     if (!this.settings.sipOutboundTrunkId) {
       throw new Error('SIP_OUTBOUND_TRUNK_ID is not configured');
     }
@@ -51,7 +41,6 @@ export class LiveKitSipAdapter {
     );
 
     try {
-      callDebug('[CALL] sip.dial:createSipParticipant', this.logger);
       await sip.createSipParticipant(
         this.settings.sipOutboundTrunkId,
         options.phoneNumber,
@@ -62,7 +51,6 @@ export class LiveKitSipAdapter {
           waitUntilAnswered: true,
         },
       );
-      callDebug('[CALL] sip.dial:answered', this.logger);
     } catch (error) {
       callError(`[CALL] sip.dial:fail error=${error}`, this.logger);
       throw error;
@@ -70,16 +58,14 @@ export class LiveKitSipAdapter {
   }
 
   /**
-   * Layman: wait until the owner's phone microphone audio is actually available
-   * in the LiveKit room (answered call ≠ audio track ready yet).
+   * Wait until the owner's mic audio track is actually subscribed in the room.
+   * An answered call does not mean audio is flowing yet.
    */
   async waitForMicrophone(
     room: Room,
     participantIdentity: string,
     timeoutMs = 20_000,
   ): Promise<void> {
-    callDebug(`[CALL] sip.waitForMicrophone:start identity=${participantIdentity} timeoutMs=${timeoutMs}`, this.logger);
-
     const hasMicTrack = (participant: RemoteParticipant): boolean => {
       for (const publication of participant.trackPublications.values()) {
         if (publication.source === TrackSource.SOURCE_MICROPHONE) {
@@ -94,7 +80,6 @@ export class LiveKitSipAdapter {
 
     const existing = room.remoteParticipants.get(participantIdentity);
     if (existing && hasMicTrack(existing)) {
-      callDebug('[CALL] sip.waitForMicrophone:ready already_available', this.logger);
       return;
     }
 
@@ -113,7 +98,6 @@ export class LiveKitSipAdapter {
           participant.identity === participantIdentity &&
           publication.source === TrackSource.SOURCE_MICROPHONE
         ) {
-          callDebug('[CALL] sip.waitForMicrophone:track_published', this.logger);
           publication.setSubscribed(true);
         }
       };
@@ -127,7 +111,6 @@ export class LiveKitSipAdapter {
           participant.identity === participantIdentity &&
           publication.source === TrackSource.SOURCE_MICROPHONE
         ) {
-          callDebug('[CALL] sip.waitForMicrophone:ready subscribed', this.logger);
           cleanup();
           resolve();
         }

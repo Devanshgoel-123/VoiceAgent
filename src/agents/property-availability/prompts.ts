@@ -11,35 +11,6 @@ export interface PropertyPromptParams {
   city?: string;
 }
 
-export function buildOpeningGreeting(
-  params: PropertyPromptParams,
-  language: LanguageCode = 'en-IN',
-): string {
-  const { companyName, callerName, ownerName, propertyAddress } = params;
-
-  if (language === 'hi-IN') {
-    return (
-      `नमस्ते ${ownerName}, मैं ${callerName}, ${companyName} से बोल रहा हूँ। ` +
-      `आपकी प्रॉपर्टी ${propertyAddress} के बारे में कॉल है। ` +
-      `क्या वह अभी भी किराए पर उपलब्ध है?`
-    );
-  }
-
-  if (language === 'kn-IN') {
-    return (
-      `ನಮಸ್ಕಾರ ${ownerName}, ನಾನು ${callerName}, ${companyName} ನಿಂದ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ. ` +
-      `ನಿಮ್ಮ ಆಸ್ತಿ ${propertyAddress} ಬಗ್ಗೆ ಕರೆ. ` +
-      `ಅದು ಇನ್ನೂ ಬಾಡಿಗೆಗೆ ಲಭ್ಯವಿದೆಯೇ?`
-    );
-  }
-
-  return (
-    `Hi ${ownerName}, this is ${callerName} from ${companyName}. ` +
-    `I'm calling about your property ` +
-    `at ${propertyAddress}. Is it still available for rent?`
-  );
-}
-
 /** LLM instructions for the opening turn (model writes the spoken text). */
 export function buildOpeningInstructions(
   params: PropertyPromptParams,

@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { CallResult, YesNoAnswer } from './models.js';
+import type { CallResult } from './models.js';
 
 const DEFAULT_RESULTS_DIR = 'call_results';
 
@@ -48,24 +48,4 @@ export class CallResultStore {
       return [];
     }
   }
-}
-
-export function buildCallResult(params: {
-  jobId: string;
-  propertyAvailable: YesNoAnswer;
-  findTenants?: YesNoAnswer;
-  language?: string;
-  summary?: string;
-  metadata?: Record<string, unknown>;
-}): CallResult {
-  return {
-    jobId: params.jobId,
-    status: 'completed',
-    propertyStillAvailable: params.propertyAvailable,
-    GalynestShouldFindTenants: params.findTenants ?? 'not_asked',
-    conversationLanguage: params.language,
-    transcriptSummary: params.summary,
-    rawMetadata: params.metadata ?? {},
-    completedAt: new Date().toISOString(),
-  };
 }

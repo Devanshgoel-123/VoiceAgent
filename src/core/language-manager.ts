@@ -167,23 +167,6 @@ export class LanguageManager {
     return null;
   }
 
-  static multilingualInstructions(): string {
-    return `
-Language rules (critical):
-- Listen to the property owner's language on every turn.
-- Automatically reply in the SAME language they use: English, Hindi (hi-IN), or Kannada (kn-IN).
-- If they switch languages mid-call with a full sentence, switch with them and call switchConversationLanguage once.
-- Do not treat short yes/no answers (yes, no, haan, nahi, haudu, illa) as a language switch.
-- Keep responses short and natural for phone calls (1-2 sentences).
-- Accept yes/no answers in any supported language:
-  * English: yes / no
-  * Hindi: haan / nahi
-  * Kannada: haudu / illa
-- If the answer is unclear, politely ask again in their current language.
-- Never ask the user to switch to English.
-`.trim();
-  }
-
   private detectLanguage(text: string): LanguageCode {
     const fromKeywords = this.detectRomanizedLanguage(text);
     if (fromKeywords !== 'unknown') return fromKeywords;

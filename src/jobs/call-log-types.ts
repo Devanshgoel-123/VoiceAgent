@@ -40,18 +40,3 @@ export interface CallLogSnapshot {
 export function isSuccessfulOutcome(outcome: OwnerOutcome): boolean {
   return outcome === 'yes' || outcome === 'no';
 }
-
-export function outcomeLabel(outcome: OwnerOutcome): string {
-  switch (outcome) {
-    case 'yes':
-      return 'Owner confirmed available';
-    case 'no':
-      return 'Owner confirmed not available';
-    case 'unclear':
-      return 'Unclear answer';
-    case 'other':
-      return 'Other / inconclusive';
-    default:
-      return 'Not asked';
-  }
-}

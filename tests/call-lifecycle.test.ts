@@ -186,29 +186,3 @@ describe('opening / closing LLM instructions', () => {
     expect(buildClosingInstructions('no', 'en-IN')).toContain('Galinest dot com');
   });
 });
-
-describe('opening greeting helper', () => {
-  it('builds English / Hindi / Kannada intros', async () => {
-    const { buildOpeningGreeting } = await import(
-      '../src/agents/property-availability/prompts.js'
-    );
-    const params = {
-      companyName: 'Galynest',
-      callerName: 'Aditi',
-      ownerName: 'Devansh',
-      propertyAddress: '42, Indiranagar',
-    };
-    const en = buildOpeningGreeting(params, 'en-IN');
-    const hi = buildOpeningGreeting(params, 'hi-IN');
-    const kn = buildOpeningGreeting(params, 'kn-IN');
-    expect(en).toContain('Aditi from Galynest');
-    expect(en).toContain('Galynest');
-    expect(en).toContain('still available');
-    expect(hi).toContain('नमस्ते');
-    expect(hi).toContain('Galynest');
-    expect(hi).toContain('Aditi');
-    expect(kn).toContain('ನಮಸ್ಕಾರ');
-    expect(kn).toContain('Galynest');
-    expect(kn).toContain('Aditi');
-  });
-});

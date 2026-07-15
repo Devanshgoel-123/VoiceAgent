@@ -40,12 +40,8 @@ export interface CallResult {
   jobId: string;
   status: CallJobStatus;
   propertyStillAvailable: YesNoAnswer;
-  GalynestShouldFindTenants: YesNoAnswer;
-  /** Primary language detected during the call. */
   conversationLanguage?: string;
-  /** All languages used during the call (owner + detected switches). */
   languagesUsed?: string[];
-  /** yes / no / unclear / other / not_asked */
   ownerOutcome?: OwnerOutcome;
   success?: boolean;
   answered?: boolean;
