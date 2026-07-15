@@ -89,7 +89,6 @@ app.get('/calls/results/:jobId', async (req, res) => {
             : row.ownerOutcome === 'unclear'
               ? 'unclear'
               : 'not_asked',
-        GalynestShouldFindTenants: 'not_asked',
         conversationLanguage: row.languages[0],
         languagesUsed: row.languages,
         ownerOutcome: row.ownerOutcome,

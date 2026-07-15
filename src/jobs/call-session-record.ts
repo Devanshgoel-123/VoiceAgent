@@ -1,4 +1,4 @@
-import type { CallMetadata } from '../core/worker.js';
+import type { CallMetadata } from '../core/types.js';
 import type {
   CallDirection,
   CallLogSnapshot,
@@ -63,11 +63,6 @@ export class CallSessionRecord {
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void {
     this.ownerOutcome = outcome;
     this.summary = summary;
-  }
-
-  setDispatchContext(roomName?: string, dispatchId?: string): void {
-    if (roomName) this.roomName = roomName;
-    if (dispatchId) this.dispatchId = dispatchId;
   }
 
   finalize(report?: SessionReportLike | null): CallLogSnapshot {

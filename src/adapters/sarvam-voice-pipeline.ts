@@ -4,7 +4,6 @@ import * as elevenlabs from '@livekit/agents-plugin-elevenlabs';
 import { tokenize, tts } from '@livekit/agents';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
-import { callDebug } from '../core/call-logger.js';
 import type { LanguageCode } from '../core/language-manager.js';
 import { LanguageManager } from '../core/language-manager.js';
 import { withTtsVolumeGain } from './tts-volume.js';
@@ -15,8 +14,8 @@ import type {
 } from './voice-pipeline.js';
 
 /**
- * Sarvam STT / LLM / TTS provider.
- * Layman: this builds the three AI pieces — ears (STT), brain (LLM), mouth (TTS).
+ * Sarvam STT + LLM, with TTS from either Sarvam or ElevenLabs.
+ * STT = ears, LLM = brain, TTS = mouth.
  */
 export class SarvamVoicePipeline implements VoicePipelineProvider {
   private readonly settings: Settings;
@@ -25,7 +24,6 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     this.settings = settings ?? getSettings();
   }
 
-  /** Layman: assemble STT + LLM + TTS ready for a call. */
   createBundle(options: VoicePipelineOptions = {}): VoicePipelineBundle {
     const language =
       options.language ?? (this.settings.defaultLanguage as LanguageCode);
@@ -33,11 +31,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     const telephony = options.telephony ?? false;
     const ttsProvider = options.ttsProvider ?? this.settings.ttsProvider;
 
-    callDebug(
-      `[CALL] pipeline.createBundle:start language=${language} telephony=${telephony} ttsProvider=${ttsProvider}`,
-    );
-
-    const bundle = {
+    return {
       stt: this.createStt('unknown'),
       llm: this.createLlm(),
       tts:
@@ -51,14 +45,10 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
       ttsProvider,
       elevenLabsVoiceId: this.settings.elevenLabsVoiceId,
     };
-
-    callDebug(`[CALL] pipeline.createBundle:done ttsProvider=${ttsProvider}`);
-    return bundle;
   }
 
-  /** Layman: speech-to-text — converts owner audio into written words. */
+  /** STT: owner audio → text. languageCode 'unknown' lets Sarvam auto-detect. */
   private createStt(languageCode = 'unknown') {
-    callDebug(`[CALL] sarvam.createStt model=saaras:v3 language=${languageCode}`);
     return new sarvam.STT({
       model: 'saaras:v3',
       languageCode,
@@ -68,9 +58,8 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     });
   }
 
-  /** Layman: language model — decides what the agent should say / which tool to call. */
+  /** LLM: Sarvam served through the OpenAI-compatible client. */
   private createLlm() {
-    callDebug(`[CALL] sarvam.createLlm model=${this.settings.llmModel}`);
     return new openai.LLM({
       model: this.settings.llmModel,
       baseURL: 'https://api.sarvam.ai/v1',
@@ -78,16 +67,12 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     });
   }
 
-  /** Layman: text-to-speech — turns the agent's written reply into spoken audio. */
+  /** TTS via Sarvam (used when TTS_PROVIDER=sarvam). */
   private createSarvamTts(options: {
     language: LanguageCode;
     speaker: string;
     telephony: boolean;
   }) {
-    callDebug(
-      `[CALL] sarvam.createTts model=bulbul:v3 language=${options.language} speaker=${options.speaker} telephony=${options.telephony} pace=${this.settings.ttsSpeed}`,
-    );
-
     const ttsOptions: sarvam.TTSV3Options = {
       model: 'bulbul:v3',
       targetLanguageCode: options.language,
@@ -112,10 +97,6 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     }
 
     const speed = Math.min(1.2, Math.max(0.8, this.settings.ttsSpeed));
-
-    callDebug(
-      `[CALL] elevenlabs.createTts model=${this.settings.elevenLabsModel} transport=${this.settings.elevenLabsTransport} language=${language} voiceId=${this.settings.elevenLabsVoiceId ?? 'default'} volume=${this.settings.ttsVolume} speed=${speed}`,
-    );
 
     const elevenLabsTts = withTtsVolumeGain(
       new elevenlabs.TTS({
@@ -148,11 +129,8 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     // marker expected by plugin 1.5.1, then close with 1006. Eleven v3 also
     // rejects WebSocket entirely. StreamAdapter feeds complete sentences to
     // synthesize(), which uses the reliable HTTP streaming endpoint.
-    // Forward updateOptions so mid-call language switching still reaches the
-    // underlying ElevenLabs instance.
-    callDebug(
-      `[CALL] elevenlabs.createTts:transport=http_sentence_stream reason=${this.settings.elevenLabsModel === 'eleven_v3' ? 'eleven_v3_no_websocket' : 'configured_http'}`,
-    );
+    // Object.assign forwards updateOptions so mid-call language switches reach
+    // the underlying ElevenLabs instance.
     const adapter = new tts.StreamAdapter(
       elevenLabsTts,
       new tokenize.basic.SentenceTokenizer(),

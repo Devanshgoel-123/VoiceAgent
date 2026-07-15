@@ -5,7 +5,7 @@ import type { CallResult } from './models.js';
 
 const DEFAULT_RESULTS_DIR = 'call_results';
 
-export function snapshotToCallResult(snapshot: CallLogSnapshot): CallResult {
+function snapshotToCallResult(snapshot: CallLogSnapshot): CallResult {
   return {
     jobId: snapshot.jobId,
     status: snapshot.status,
@@ -17,7 +17,6 @@ export function snapshotToCallResult(snapshot: CallLogSnapshot): CallResult {
         : snapshot.ownerOutcome === 'other'
           ? 'unclear'
           : 'not_asked',
-    GalynestShouldFindTenants: 'not_asked',
     conversationLanguage: snapshot.languages[0],
     languagesUsed: snapshot.languages,
     ownerOutcome: snapshot.ownerOutcome,
