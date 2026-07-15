@@ -9,7 +9,6 @@ import {
   LanguageManager,
   type LanguageCode,
 } from '../core/language-manager.js';
-import { buildClosingInstructions } from '../agents/property-availability/prompts.js';
 import { applySpokenLanguage } from './spoken-language.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
@@ -65,10 +64,8 @@ export function goodbyeForLanguage(language: LanguageCode): string {
 export const GOODBYE_PLAYOUT_TIMEOUT_MS = 20000;
 /** Base SIP flush after local playout; scaled up further when TTS_SPEED < 1. */
 export const GOODBYE_SIP_DRAIN_GRACE_MS = 1_500;
-/** Clear interrupted audio before starting goodbye TTS. */
-export const GOODBYE_POST_INTERRUPT_MS = 400;
-/** Leave the tool stack, then interrupt any stuck post-tool TTS and hang up. */
-export const HANGUP_DEFER_MS = 300;
+/** Leave the tool stack, then wait for the model closing speech and hang up. */
+export const HANGUP_DEFER_MS = 800;
 /** If session Close never fires after shutdown, delete the room anyway. */
 export const CLOSE_FALLBACK_TIMEOUT_MS = 1500;
 
@@ -86,9 +83,8 @@ export type CallMetadata = Record<string, unknown>;
 
 export interface CallLifecycle {
   /**
-   * After availability is recorded: thank the owner, shut down the session, hang up.
-   * Idempotent. Does NOT wait for the parent tool speech handle — that handle often
-   * never completes when post-tool TTS hangs in "speaking".
+   * After availability is recorded: wait for the model closing speech, then hang up.
+   * Idempotent.
    */
   scheduleHangup(outcome?: AvailabilityOutcome): void;
 
@@ -98,7 +94,10 @@ export interface CallLifecycle {
    */
   setSpokenLanguage(language: LanguageCode, reason?: string): void;
 
-  /** Record owner yes/no/other before the scripted closing message plays. */
+  /** Current conversation language tracked by the session. */
+  getCurrentLanguage(): LanguageCode;
+
+  /** Record owner yes/no/other before the closing turn. */
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void;
 }
 
@@ -153,6 +152,7 @@ export class LiveKitCallSession implements CallLifecycle {
   private readonly languageManager = new LanguageManager('en-IN');
   /** Last language pushed into Sarvam TTS (avoid redundant updateOptions). */
   private appliedTtsLanguage: LanguageCode | null = null;
+  private latestSpeechHandle?: { waitForPlayout(): Promise<void> };
 
   constructor(options: LiveKitCallSessionOptions) {
     this.ctx = options.jobContext;
@@ -303,6 +303,10 @@ export class LiveKitCallSession implements CallLifecycle {
     );
   }
 
+  getCurrentLanguage(): LanguageCode {
+    return this.languageManager.getCurrentLanguage();
+  }
+
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void {
     this.callRecord?.recordOwnerOutcome(outcome, summary);
     callDebug(
@@ -405,6 +409,7 @@ export class LiveKitCallSession implements CallLifecycle {
     });
 
     session.on(voice.AgentSessionEventTypes.SpeechCreated, (ev) => {
+      this.latestSpeechHandle = ev.speechHandle;
       callDebug(
         `[CALL] session.speech_created id=${ev.speechHandle.id} source=${ev.source}`,
         this.logger,
@@ -498,10 +503,9 @@ export class LiveKitCallSession implements CallLifecycle {
   }
 
   /**
-   * Layman: cut any stuck speech, say thank-you (best effort), then force-close.
+   * Wait for the model-generated closing (from the tool reply), then hang up.
+   * Fallback to a short scripted line only if no closing speech starts.
    *
-   * Important: LiveKit `shutdown({ drain: true })` awaits currentSpeech.waitForPlayout().
-   * If goodbye TTS hangs, Close never fires and the SIP call never drops.
    * Always shut down with drain:false and delete the room as a hard hangup.
    */
   private async playGoodbyeAndHangup(): Promise<void> {
@@ -513,48 +517,53 @@ export class LiveKitCallSession implements CallLifecycle {
     this.clearOpeningGreeting('goodbye');
 
     const session = this.requireSession();
-
-    try {
-      callDebug('[CALL] session.goodbye:interrupt_stuck_speech', this.logger);
-      session.interrupt({ force: true });
-    } catch (error) {
-      callWarn(`[CALL] session.goodbye:interrupt_fail error=${error}`, this.logger);
-    }
-
-    // Let interrupted audio clear before goodbye — otherwise slow TTS sounds garbled.
-    await sleep(GOODBYE_POST_INTERRUPT_MS);
+    const language = this.languageManager.getCurrentLanguage();
+    this.setSpokenLanguage(language, 'goodbye');
+    const ttsSpeed = getSettings().ttsSpeed;
+    const sipDrainMs = Math.round(
+      GOODBYE_SIP_DRAIN_GRACE_MS / Math.min(1, Math.max(0.5, ttsSpeed)),
+    );
 
     let goodbyeTimedOut = false;
-    try {
-      const language = this.languageManager.getCurrentLanguage();
-      this.setSpokenLanguage(language, 'goodbye');
-      const ttsSpeed = getSettings().ttsSpeed;
-      const sipDrainMs = Math.round(
-        GOODBYE_SIP_DRAIN_GRACE_MS / Math.min(1, Math.max(0.5, ttsSpeed)),
-      );
 
-      let speech;
+    try {
       if (this.goodbyeText !== DEFAULT_GOODBYE_TEXT) {
         callDebug(
           `[CALL] session.goodbye:say_custom language=${language} text="${this.goodbyeText}"`,
           this.logger,
         );
         this.callRecord?.transcriptBuilder.addAssistantText(this.goodbyeText, 'closing');
-        speech = session.say(this.goodbyeText, { allowInterruptions: false });
+        const speech = session.say(this.goodbyeText, { allowInterruptions: false });
+        goodbyeTimedOut = await raceWithTimeout(
+          speech.waitForPlayout(),
+          GOODBYE_PLAYOUT_TIMEOUT_MS,
+        );
       } else if (this.availabilityOutcome) {
-        const instructions = buildClosingInstructions(
-          this.availabilityOutcome,
-          language,
-        );
-        callDebug(
-          `[CALL] session.goodbye:generate_reply language=${language} outcome=${this.availabilityOutcome}`,
-          this.logger,
-        );
-        speech = session.generateReply({
-          instructions,
-          toolChoice: 'none',
-          allowInterruptions: false,
-        });
+        // The existing speech handle owns the complete LLM turn, including the
+        // post-tool closing. Await that exact handle; never race it with another
+        // generated/scripted closing, which would queue duplicate audio.
+        if (this.latestSpeechHandle) {
+          callDebug(
+            `[CALL] session.goodbye:await_original_reply language=${language} outcome=${this.availabilityOutcome}`,
+            this.logger,
+          );
+          goodbyeTimedOut = await raceWithTimeout(
+            this.latestSpeechHandle.waitForPlayout(),
+            GOODBYE_PLAYOUT_TIMEOUT_MS,
+          );
+        } else {
+          const fallback = availabilityClosing(this.availabilityOutcome, language);
+          callWarn(
+            `[CALL] session.goodbye:fallback_say reason=no_speech_handle text="${fallback}"`,
+            this.logger,
+          );
+          this.callRecord?.transcriptBuilder.addAssistantText(fallback, 'closing');
+          const speech = session.say(fallback, { allowInterruptions: false });
+          goodbyeTimedOut = await raceWithTimeout(
+            speech.waitForPlayout(),
+            GOODBYE_PLAYOUT_TIMEOUT_MS,
+          );
+        }
       } else {
         const goodbyeText = goodbyeForLanguage(language);
         callDebug(
@@ -562,34 +571,24 @@ export class LiveKitCallSession implements CallLifecycle {
           this.logger,
         );
         this.callRecord?.transcriptBuilder.addAssistantText(goodbyeText, 'closing');
-        speech = session.say(goodbyeText, { allowInterruptions: false });
+        const speech = session.say(goodbyeText, { allowInterruptions: false });
+        goodbyeTimedOut = await raceWithTimeout(
+          speech.waitForPlayout(),
+          GOODBYE_PLAYOUT_TIMEOUT_MS,
+        );
       }
 
       callDebug(
-        `[CALL] session.goodbye:play_start language=${language} speed=${ttsSpeed} drainMs=${sipDrainMs}`,
+        `[CALL] session.goodbye:play_result timedOut=${goodbyeTimedOut} speed=${ttsSpeed} drainMs=${sipDrainMs}`,
         this.logger,
       );
-      goodbyeTimedOut = await raceWithTimeout(
-        speech.waitForPlayout(),
-        GOODBYE_PLAYOUT_TIMEOUT_MS,
-      );
-      if (goodbyeTimedOut) {
-        callWarn('[CALL] session.goodbye:play_timeout', this.logger);
-      } else {
-        callDebug('[CALL] session.goodbye:play_done', this.logger);
-        callDebug(
-          `[CALL] session.goodbye:sip_drain_start ms=${sipDrainMs}`,
-          this.logger,
-        );
+      if (!goodbyeTimedOut) {
         await sleep(sipDrainMs);
-        callDebug('[CALL] session.goodbye:sip_drain_done', this.logger);
       }
     } catch (error) {
       callError(`[CALL] session.goodbye:play_fail error=${error}`, this.logger);
     }
 
-    // Do not interrupt a goodbye that completed: SIP may still be flushing it.
-    // Force interruption remains the escape hatch for a genuinely wedged TTS.
     if (goodbyeTimedOut) {
       try {
         callDebug('[CALL] session.goodbye:interrupt_after_timeout', this.logger);

@@ -51,6 +51,8 @@ export function buildOpeningInstructions(
   return (
     `Speak ONLY in ${languageName}. ` +
     `Introduce yourself as ${params.callerName} from ${params.companyName} to ${params.ownerName}. ` +
+    `Say the company name exactly once as "${params.companyName}" — do not transliterate it and also say it in English/parentheses. ` +
+    `Say your personal name exactly once. ` +
     `Mention the property at ${params.propertyAddress}. ` +
     `Ask once whether it is still available for rent. ` +
     `Keep it to 1-2 short sentences. Do not call any tools.`
@@ -67,18 +69,20 @@ export function buildClosingInstructions(
 
   if (outcome === 'yes') {
     return (
-      `Speak ONLY in ${languageName}. ` +
+      `Speak ONLY in ${languageName} now. This is the final closing. ` +
       `Thank the owner briefly. Say the Galinest team will continue searching for tenants, ` +
       `and that we will call them as soon as we find a tenant. ` +
       `Recommend saving this number as Galinest Property Team. Wish them a good day. ` +
+      `Say company names exactly once — never as both a transliteration and English in parentheses. ` +
       `Keep it to 2-3 short sentences. Do not ask any new questions. Do not call any tools.`
     );
   }
 
   return (
-    `Speak ONLY in ${languageName}. ` +
+    `Speak ONLY in ${languageName} now. This is the final closing. ` +
     `Thank them for the information. Say we will update our records and will not disturb them again. ` +
     `If they want a tenant later, they can visit Galinest dot com. Wish them a good day. ` +
+    `Say company names exactly once — never as both a transliteration and English in parentheses. ` +
     `Keep it to 2-3 short sentences. Do not ask any new questions. Do not call any tools.`
   );
 }
@@ -109,7 +113,7 @@ RULES:
 - Always reply in the same language the owner is using (English, Hindi, or Kannada).
 - If they clearly switch languages mid-call (full sentence in a new language), switch with them and call switchConversationLanguage once.
 - Do NOT switch language just because they said yes/no/haan/nahi/haudu/illa — those answers keep the current conversation language.
-- Never use square brackets. Say "${params.companyName}" plainly.
+- Never use square brackets. Say "${params.companyName}" plainly, exactly once — do not say it as a transliteration plus English in parentheses.
 - Always introduce yourself as "${params.callerName} from ${params.companyName}", never as only the company name.
 - "Hello" and "hi" are greetings, not goodbye — keep going.
 - Keep the call under 1 minute.
