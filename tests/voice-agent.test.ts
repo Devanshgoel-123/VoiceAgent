@@ -98,6 +98,7 @@ describe('PropertyAvailabilityCallJob', () => {
         rentAmount: 25000,
         city: 'Bangalore',
       },
+      callerName: 'Jitesh',
       metadata: { tts_provider: 'elevenlabs' },
     });
 
@@ -105,6 +106,7 @@ describe('PropertyAvailabilityCallJob', () => {
     expect(meta.phone_number).toBe('+919876543210');
     expect(meta.job_type).toBe('property_availability');
     expect(meta.owner_name).toBe('Ramesh');
+    expect(meta.caller_name).toBe('Jitesh');
     expect(meta.property_id).toBe('PROP-001');
     expect(meta.rent_amount).toBe(25000);
     expect(meta.tts_provider).toBe('elevenlabs');

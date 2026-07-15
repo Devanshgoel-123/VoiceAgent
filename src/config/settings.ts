@@ -34,6 +34,8 @@ export interface Settings {
   apiHost: string;
   apiPort: number;
   companyName: string;
+  /** Human name used when the voice agent introduces itself. */
+  callerName: string;
   sttModel: string;
   llmModel: string;
   ttsModel: string;
@@ -82,10 +84,10 @@ function parseTtsVolume(raw: string | undefined): number {
   return Math.min(1, Math.max(0.1, parsed));
 }
 
-/** Speaking rate. Default 0.85 (slightly slower). Provider clamps applied at TTS create. */
+/** Speaking rate. Default 0.8 (ElevenLabs minimum / slowest). Provider clamps at TTS create. */
 function parseTtsSpeed(raw: string | undefined): number {
-  const parsed = Number(raw ?? '0.85');
-  if (!Number.isFinite(parsed)) return 0.85;
+  const parsed = Number(raw ?? '0.8');
+  if (!Number.isFinite(parsed)) return 0.8;
   return Math.min(2, Math.max(0.5, parsed));
 }
 
@@ -126,6 +128,7 @@ export function getSettings(): Settings {
     apiHost: process.env.API_HOST ?? '0.0.0.0',
     apiPort: Number(process.env.API_PORT ?? '8080'),
     companyName: process.env.COMPANY_NAME ?? 'Gullynest',
+    callerName: process.env.CALLER_NAME ?? 'Jitesh',
     sttModel: 'saaras:v3',
     llmModel: 'sarvam-105b',
     ttsModel: 'bulbul:v3',

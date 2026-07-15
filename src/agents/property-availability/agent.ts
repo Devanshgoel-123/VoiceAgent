@@ -49,6 +49,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
 
     const instructions = buildPropertyAvailabilityInstructions({
       companyName: state.companyName,
+      callerName: (metadata.caller_name as string) ?? 'Jitesh',
       ownerName: state.ownerName,
       propertyAddress: (metadata.property_address as string) ?? 'your property',
       propertyType: metadata.property_type as string | undefined,

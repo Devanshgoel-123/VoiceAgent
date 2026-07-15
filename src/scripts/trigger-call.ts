@@ -30,7 +30,7 @@ async function main() {
 
   if (!ownerName || !phone || !propertyId || !address) {
     console.error(
-      'Usage: npm run trigger:call -- --owner-name "Name" --phone "+91..." --property-id "ID" --address "Address" [--bhk "2 BHK"] [--rent 25000] [--city Bangalore] [--language en-IN|hi-IN|kn-IN] [--tts-provider sarvam|elevenlabs]',
+      'Usage: npm run trigger:call -- --owner-name "Name" --phone "+91..." --property-id "ID" --address "Address" [--caller-name Jitesh] [--bhk "2 BHK"] [--rent 25000] [--city Bangalore] [--language en-IN|hi-IN|kn-IN] [--tts-provider sarvam|elevenlabs]',
     );
     process.exit(1);
   }
@@ -47,6 +47,7 @@ async function main() {
       propertyType: args.property_type,
     },
     companyName: settings.companyName,
+    callerName: args.caller_name ?? settings.callerName,
     preferredLanguage: args.language,
     metadata:
       args.tts_provider === 'sarvam' || args.tts_provider === 'elevenlabs'

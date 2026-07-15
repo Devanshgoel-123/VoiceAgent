@@ -282,6 +282,7 @@ curl -X POST http://localhost:8080/calls/property-availability \
   -H "Content-Type: application/json" \
   -d '{
     "owner_name": "Ramesh Kumar",
+    "caller_name": "Jitesh",
     "phone_number": "+919876543210",
     "property_id": "PROP-001",
     "property_address": "42, 5th Cross, Indiranagar, Bangalore",
@@ -298,6 +299,7 @@ curl -X POST http://localhost:8080/calls/property-availability \
 ```bash
 npm run trigger:call -- \
   --owner-name "Ramesh Kumar" \
+  --caller-name "Jitesh" \
   --phone "+919876543210" \
   --property-id "PROP-001" \
   --address "42, 5th Cross, Indiranagar, Bangalore" \
@@ -358,6 +360,7 @@ curl http://localhost:8080/calls/results/{job_id}
 | `SIP_OUTBOUND_TRUNK_ID` | For phone calls | Outbound SIP trunk (`ST_...`) |
 | `AGENT_NAME` | No | Dispatch name (default: `gully-property-availability-agent`) |
 | `COMPANY_NAME` | No | Brand name (default: `Gullynest`) |
+| `CALLER_NAME` | No | Spoken caller name (default: `Jitesh`); API `caller_name` can override it per call |
 | `API_HOST` / `API_PORT` | No | Trigger API bind address |
 
 ### Logging

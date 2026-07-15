@@ -27,6 +27,7 @@ export interface PropertyAvailabilityCallJob {
   owner: OwnerDetails;
   property: PropertyDetails;
   companyName?: string;
+  callerName?: string;
   preferredLanguage?: string;
   scheduledAt?: string;
   metadata?: Record<string, unknown>;
@@ -60,6 +61,7 @@ export function createPropertyAvailabilityJob(
     owner: input.owner,
     property: input.property,
     companyName: input.companyName ?? 'Gullynest',
+    callerName: input.callerName ?? 'Jitesh',
     preferredLanguage: input.preferredLanguage,
     scheduledAt: input.scheduledAt,
     metadata: input.metadata ?? {},
@@ -79,6 +81,7 @@ export function toDispatchMetadata(job: PropertyAvailabilityCallJob): Record<str
     rent_amount: job.property.rentAmount,
     city: job.property.city,
     company_name: job.companyName,
+    caller_name: job.callerName,
     preferred_language: job.preferredLanguage,
     ...job.metadata,
   };

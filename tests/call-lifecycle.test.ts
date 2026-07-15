@@ -146,17 +146,21 @@ describe('opening greeting helper', () => {
     );
     const params = {
       companyName: 'Gullynest',
+      callerName: 'Jitesh',
       ownerName: 'Devansh',
       propertyAddress: '42, Indiranagar',
     };
     const en = buildOpeningGreeting(params, 'en-IN');
     const hi = buildOpeningGreeting(params, 'hi-IN');
     const kn = buildOpeningGreeting(params, 'kn-IN');
+    expect(en).toContain('Jitesh from Gullynest');
     expect(en).toContain('Gullynest');
     expect(en).toContain('still available');
     expect(hi).toContain('नमस्ते');
     expect(hi).toContain('Gullynest');
+    expect(hi).toContain('Jitesh');
     expect(kn).toContain('ನಮಸ್ಕಾರ');
     expect(kn).toContain('Gullynest');
+    expect(kn).toContain('Jitesh');
   });
 });

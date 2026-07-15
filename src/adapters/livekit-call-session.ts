@@ -1,5 +1,6 @@
 import { getJobContext, type JobContext, log, voice } from '@livekit/agents';
 import { callDebug, callError, callWarn } from '../core/call-logger.js';
+import { getSettings } from '../config/settings.js';
 import {
   LanguageManager,
   type LanguageCode,
@@ -7,21 +8,24 @@ import {
 import { applySpokenLanguage } from './spoken-language.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
-export const DEFAULT_GOODBYE_TEXT = 'Thank you for confirming. Have a great day!';
+/** Keep this short — slow TTS + long goodbye gets cut off mid-sentence on hangup. */
+export const DEFAULT_GOODBYE_TEXT = 'Thank you. Goodbye.';
 
 export function goodbyeForLanguage(language: LanguageCode): string {
   if (language === 'hi-IN') {
-    return 'पुष्टि करने के लिए धन्यवाद। आपका दिन शुभ हो!';
+    return 'धन्यवाद।';
   }
   if (language === 'kn-IN') {
-    return 'ದೃಢೀಕರಿಸಿದಕ್ಕಾಗಿ ಧನ್ಯವಾದಗಳು. ನಿಮಗೆ ಶುಭ ದಿನವಾಗಲಿ!';
+    return 'ಧನ್ಯವಾದಗಳು।';
   }
   return DEFAULT_GOODBYE_TEXT;
 }
-/** Covers ElevenLabs HTTP generation plus the full spoken goodbye. */
-export const GOODBYE_PLAYOUT_TIMEOUT_MS = 10_000;
-/** Last SIP/PSTN packets can trail LiveKit's local playout completion. */
-export const GOODBYE_SIP_DRAIN_GRACE_MS = 1_000;
+/** Covers ElevenLabs HTTP generation plus the full spoken goodbye (slower TTS needs headroom). */
+export const GOODBYE_PLAYOUT_TIMEOUT_MS = 5000;
+/** Base SIP flush after local playout; scaled up further when TTS_SPEED < 1. */
+export const GOODBYE_SIP_DRAIN_GRACE_MS = 500;
+/** Clear interrupted audio before starting goodbye TTS. */
+export const GOODBYE_POST_INTERRUPT_MS = 400;
 /** Leave the tool stack, then interrupt any stuck post-tool TTS and hang up. */
 export const HANGUP_DEFER_MS = 300;
 /** If session Close never fires after shutdown, delete the room anyway. */
@@ -440,7 +444,8 @@ export class LiveKitCallSession implements CallLifecycle {
       callWarn(`[CALL] session.goodbye:interrupt_fail error=${error}`, this.logger);
     }
 
-    await sleep(150);
+    // Let interrupted audio clear before goodbye — otherwise slow TTS sounds garbled.
+    await sleep(GOODBYE_POST_INTERRUPT_MS);
 
     let goodbyeTimedOut = false;
     try {
@@ -449,8 +454,13 @@ export class LiveKitCallSession implements CallLifecycle {
       const goodbyeText = this.goodbyeText === DEFAULT_GOODBYE_TEXT
         ? goodbyeForLanguage(language)
         : this.goodbyeText;
+      const ttsSpeed = getSettings().ttsSpeed;
+      // Slower speech needs more SIP flush time after waitForPlayout returns.
+      const sipDrainMs = Math.round(
+        GOODBYE_SIP_DRAIN_GRACE_MS / Math.min(1, Math.max(0.5, ttsSpeed)),
+      );
       callDebug(
-        `[CALL] session.goodbye:play_start language=${language} text="${goodbyeText}"`,
+        `[CALL] session.goodbye:play_start language=${language} speed=${ttsSpeed} drainMs=${sipDrainMs} text="${goodbyeText}"`,
         this.logger,
       );
       const speech = session.say(goodbyeText, { allowInterruptions: false });
@@ -463,10 +473,10 @@ export class LiveKitCallSession implements CallLifecycle {
       } else {
         callDebug('[CALL] session.goodbye:play_done', this.logger);
         callDebug(
-          `[CALL] session.goodbye:sip_drain_start ms=${GOODBYE_SIP_DRAIN_GRACE_MS}`,
+          `[CALL] session.goodbye:sip_drain_start ms=${sipDrainMs}`,
           this.logger,
         );
-        await sleep(GOODBYE_SIP_DRAIN_GRACE_MS);
+        await sleep(sipDrainMs);
         callDebug('[CALL] session.goodbye:sip_drain_done', this.logger);
       }
     } catch (error) {

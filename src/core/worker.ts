@@ -134,6 +134,8 @@ export function createWorkerConfig(
           const openingParams = {
             companyName:
               (effectiveMetadata.company_name as string) ?? settings.companyName,
+            callerName:
+              (effectiveMetadata.caller_name as string) ?? settings.callerName,
             ownerName: (effectiveMetadata.owner_name as string) ?? 'Sir/Madam',
             propertyAddress:
               (effectiveMetadata.property_address as string) ?? 'your property',

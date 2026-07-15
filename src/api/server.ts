@@ -33,6 +33,7 @@ app.post('/calls/property-availability', async (req, res) => {
       city,
       preferred_language: preferredLanguage,
       tts_provider: ttsProvider,
+      caller_name: callerName,
     } = req.body;
 
     if (!ownerName || !phoneNumber || !propertyId || !propertyAddress) {
@@ -54,6 +55,10 @@ app.post('/calls/property-availability', async (req, res) => {
         city,
       },
       companyName: settings.companyName,
+      callerName:
+        typeof callerName === 'string' && callerName.trim()
+          ? callerName.trim()
+          : settings.callerName,
       preferredLanguage,
       metadata:
         ttsProvider === 'sarvam' || ttsProvider === 'elevenlabs'
