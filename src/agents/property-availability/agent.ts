@@ -7,7 +7,10 @@ import type { CallMetadata } from '../../core/worker.js';
 import { LanguageManager } from '../../core/language-manager.js';
 import type { YesNoAnswer } from '../../jobs/models.js';
 import { registerAgent } from '../registry.js';
-import { buildPropertyAvailabilityInstructions } from './prompts.js';
+import {
+  buildClosingInstructions,
+  buildPropertyAvailabilityInstructions,
+} from './prompts.js';
 
 interface PropertyWorkflowState {
   jobId: string;
@@ -123,12 +126,13 @@ function buildPropertyTools(
     recordPropertyAvailability: llm.tool({
       description:
         'Record the owner yes/no answer about whether the property is still available for rent. ' +
-        'The system will thank the owner and hang up after this tool finishes.',
+        'After this tool, speak the closing message returned in the tool result, then stop.',
       parameters: z.object({
         isAvailable: z.boolean().describe('True if the property is still available'),
         ownerResponse: z.string().describe('Exact words the owner used'),
       }),
-      // Return nothing so LiveKit does not run a second LLM "tool reply" pass.
+      // Must return a non-empty string — Sarvam rejects empty tool content (400).
+      // The returned text is the closing brief for the model's next spoken turn.
       execute: async ({ isAvailable, ownerResponse }) => {
         callDebug(
           `[CALL] agent.tool.recordPropertyAvailability:start answer="${ownerResponse}" isAvailable=${isAvailable}`,
@@ -141,14 +145,22 @@ function buildPropertyTools(
           throw error;
         }
 
+        const language =
+          lifecycle?.getCurrentLanguage() ?? state.languageManager.getCurrentLanguage();
+        const closingBrief = buildClosingInstructions(
+          isAvailable ? 'yes' : 'no',
+          language === 'unknown' ? 'en-IN' : language,
+        );
+
         if (!lifecycle) {
           callError('[CALL] agent.tool.recordPropertyAvailability:no_lifecycle hangup_will_not_run');
-          return;
+          return closingBrief;
         }
 
         callDebug('[CALL] agent.tool.recordPropertyAvailability:schedule_hangup');
         lifecycle.scheduleHangup(isAvailable ? 'yes' : 'no');
         callDebug('[CALL] agent.tool.recordPropertyAvailability:schedule_hangup_done');
+        return closingBrief;
       },
     }),
 
