@@ -120,7 +120,6 @@ export function createWorkerConfig(
                     (effectiveMetadata.company_name as string) ?? settings.companyName,
                   callerName:
                     (effectiveMetadata.caller_name as string) ?? settings.callerName,
-                  ownerName: (effectiveMetadata.owner_name as string) ?? 'Owner',
                   propertyAddress:
                     (effectiveMetadata.property_address as string) ?? 'your property',
                 },
