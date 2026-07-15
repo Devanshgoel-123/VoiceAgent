@@ -1,11 +1,11 @@
 import { llm, voice } from '@livekit/agents';
+import { getSettings } from '../../config/settings.js';
 import { callDebug, callError } from '../../core/call-logger.js';
 import { z } from 'zod';
 import type { CallLifecycle } from '../../adapters/livekit-call-session.js';
 import type { CallMetadata } from '../../core/worker.js';
 import { LanguageManager } from '../../core/language-manager.js';
 import type { YesNoAnswer } from '../../jobs/models.js';
-import { buildCallResult, CallResultStore } from '../../jobs/results.js';
 import { registerAgent } from '../registry.js';
 import { buildPropertyAvailabilityInstructions } from './prompts.js';
 
@@ -16,8 +16,7 @@ interface PropertyWorkflowState {
   callMetadata: CallMetadata;
   propertyAvailable: YesNoAnswer;
   languageManager: LanguageManager;
-  resultStore: CallResultStore;
-  resultSaved: boolean;
+  outcomeRecorded: boolean;
 }
 
 /** Layman: create the small notepad the agent keeps during one call. */
@@ -25,15 +24,14 @@ function createWorkflowState(metadata: CallMetadata): PropertyWorkflowState {
   const preferred = metadata.preferred_language as string | undefined;
   return {
     jobId: (metadata.job_id as string) ?? 'unknown',
-    companyName: (metadata.company_name as string) ?? 'Gullynest',
+    companyName: (metadata.company_name as string) ?? 'Galynest',
     ownerName: (metadata.owner_name as string) ?? 'Sir/Madam',
     callMetadata: metadata,
     propertyAvailable: 'not_asked',
     languageManager: new LanguageManager(
       (preferred as 'en-IN' | 'hi-IN' | 'kn-IN') ?? 'en-IN',
     ),
-    resultStore: new CallResultStore(),
-    resultSaved: false,
+    outcomeRecorded: false,
   };
 }
 
@@ -49,7 +47,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
 
     const instructions = buildPropertyAvailabilityInstructions({
       companyName: state.companyName,
-      callerName: (metadata.caller_name as string) ?? 'Jitesh',
+      callerName: (metadata.caller_name as string) ?? getSettings().callerName,
       ownerName: state.ownerName,
       propertyAddress: (metadata.property_address as string) ?? 'your property',
       propertyType: metadata.property_type as string | undefined,
@@ -89,28 +87,28 @@ class PropertyAvailabilityAgent extends voice.Agent {
   }
 }
 
-/** Layman: write the yes/no outcome to a JSON file on disk. */
-async function saveCallResult(
+function recordAvailabilityOutcome(
   state: PropertyWorkflowState,
-  summary: string,
-): Promise<void> {
-  if (state.resultSaved) {
-    callDebug(`[CALL] agent.saveCallResult:skip already_saved job=${state.jobId}`);
+  lifecycle: CallLifecycle | undefined,
+  isAvailable: boolean,
+  ownerResponse: string,
+): void {
+  if (state.outcomeRecorded) {
+    callDebug(`[CALL] agent.recordAvailability:skip already_recorded job=${state.jobId}`);
     return;
   }
 
-  callDebug(`[CALL] agent.saveCallResult:start job=${state.jobId}`);
-  const result = buildCallResult({
-    jobId: state.jobId,
-    propertyAvailable: state.propertyAvailable,
-    language: state.languageManager.getCurrentLanguage(),
-    summary,
-    metadata: state.callMetadata,
-  });
+  state.outcomeRecorded = true;
+  state.propertyAvailable = isAvailable ? 'yes' : 'no';
 
-  await state.resultStore.save(result);
-  state.resultSaved = true;
-  callDebug(`[CALL] agent.saveCallResult:done job=${state.jobId} result=${state.propertyAvailable}`);
+  const summary = isAvailable
+    ? 'Owner confirmed that the property is available.'
+    : 'Owner confirmed that the property is not available.';
+
+  lifecycle?.recordOwnerOutcome(isAvailable ? 'yes' : 'no', summary);
+  callDebug(
+    `[CALL] agent.recordAvailability:done job=${state.jobId} answer="${ownerResponse}" outcome=${state.propertyAvailable}`,
+  );
 }
 
 function buildPropertyTools(
@@ -132,17 +130,14 @@ function buildPropertyTools(
       }),
       // Return nothing so LiveKit does not run a second LLM "tool reply" pass.
       execute: async ({ isAvailable, ownerResponse }) => {
-        callDebug(`[CALL] agent.tool.recordPropertyAvailability:start answer="${ownerResponse}" isAvailable=${isAvailable}`);
-        state.propertyAvailable = isAvailable ? 'yes' : 'no';
-
-        const summary = isAvailable
-          ? 'Owner confirmed that the property is available.'
-          : 'Owner confirmed that the property is not available.';
+        callDebug(
+          `[CALL] agent.tool.recordPropertyAvailability:start answer="${ownerResponse}" isAvailable=${isAvailable}`,
+        );
 
         try {
-          await saveCallResult(state, summary);
+          recordAvailabilityOutcome(state, lifecycle, isAvailable, ownerResponse);
         } catch (error) {
-          callError(`[CALL] agent.tool.recordPropertyAvailability:save_fail error=${error}`);
+          callError(`[CALL] agent.tool.recordPropertyAvailability:fail error=${error}`);
           throw error;
         }
 
@@ -151,8 +146,6 @@ function buildPropertyTools(
           return;
         }
 
-        // Do not wait on speechHandle — after tool-only turns, TTS can sit
-        // in "speaking" forever and the done callback never fires.
         callDebug('[CALL] agent.tool.recordPropertyAvailability:schedule_hangup');
         lifecycle.scheduleHangup(isAvailable ? 'yes' : 'no');
         callDebug('[CALL] agent.tool.recordPropertyAvailability:schedule_hangup_done');

@@ -49,6 +49,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
               telephony,
             }),
       ttsProvider,
+      elevenLabsVoiceId: this.settings.elevenLabsVoiceId,
     };
 
     callDebug(`[CALL] pipeline.createBundle:done ttsProvider=${ttsProvider}`);

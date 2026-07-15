@@ -54,6 +54,69 @@ export class LanguageManager {
     return this.currentLanguage;
   }
 
+  /**
+   * Decide conversation language for a turn without flipping on short yes/no answers.
+   * Returns null when the language should stay as-is (caller should not retune TTS).
+   */
+  resolveSpokenLanguage(
+    transcript: string,
+    sttRaw?: string | null,
+  ): LanguageCode | null {
+    const trimmed = transcript.trim();
+    if (!trimmed) return null;
+
+    if (LanguageManager.isShortYesNo(trimmed)) {
+      return null;
+    }
+
+    const fromStt = LanguageManager.normalizeLanguageCode(sttRaw);
+    const fromScript = this.detectScriptLanguage(trimmed);
+    const fromKeywords = this.detectRomanizedLanguage(trimmed);
+
+    // Native script is the strongest signal.
+    if (fromScript === 'hi-IN' || fromScript === 'kn-IN') {
+      return fromScript;
+    }
+
+    // Explicit Romanized Hindi/Kannada words (haan / haudu), not bare yes/no.
+    if (fromKeywords === 'hi-IN' || fromKeywords === 'kn-IN') {
+      return fromKeywords;
+    }
+
+    if (fromStt && fromStt !== this.currentLanguage) {
+      // Trust STT only when the utterance is long enough to be a real switch.
+      const tokenCount = (trimmed.match(/\p{L}+/gu) ?? []).length;
+      if (tokenCount >= 3 || fromScript === 'en-IN') {
+        return fromStt;
+      }
+    }
+
+    if (fromScript === 'en-IN' && (trimmed.match(/\p{L}+/gu) ?? []).length >= 3) {
+      return 'en-IN';
+    }
+
+    return null;
+  }
+
+  /** True for short availability answers that should not change conversation language. */
+  static isShortYesNo(text: string): boolean {
+    const tokens = text.trim().toLowerCase().match(/\p{L}+/gu) ?? [];
+    if (tokens.length === 0 || tokens.length > 3) return false;
+
+    const yesNo = new Set<string>([
+      ...STRONG_AFFIRMATIVE['en-IN']!,
+      ...STRONG_AFFIRMATIVE['hi-IN']!,
+      ...STRONG_AFFIRMATIVE['kn-IN']!,
+      ...STRONG_NEGATIVE['en-IN']!,
+      ...STRONG_NEGATIVE['hi-IN']!,
+      ...STRONG_NEGATIVE['kn-IN']!,
+      'available',
+      'unavailable',
+    ]);
+
+    return tokens.every((token) => yesNo.has(token));
+  }
+
   detectFromText(text: string): LanguageDetectionResult {
     const normalized = text.trim().toLowerCase();
     if (!normalized) {
@@ -68,12 +131,15 @@ export class LanguageManager {
     const language = this.detectLanguage(normalized);
     const { affirmative, negative } = this.resolveIntent(normalized);
 
-    if (language !== 'unknown') {
+    if (language !== 'unknown' && !LanguageManager.isShortYesNo(normalized)) {
       this.currentLanguage = language;
     }
 
     return {
-      language: language !== 'unknown' ? language : this.currentLanguage,
+      language:
+        language !== 'unknown' && !LanguageManager.isShortYesNo(normalized)
+          ? language
+          : this.currentLanguage,
       confidence: language !== 'unknown' ? 0.85 : 0.5,
       isAffirmative: affirmative,
       isNegative: negative,
@@ -106,8 +172,8 @@ export class LanguageManager {
 Language rules (critical):
 - Listen to the property owner's language on every turn.
 - Automatically reply in the SAME language they use: English, Hindi (hi-IN), or Kannada (kn-IN).
-- If they switch languages mid-call (e.g. English → Hindi), switch with them immediately.
-- When you notice a language switch, call switchConversationLanguage with the new code.
+- If they switch languages mid-call with a full sentence, switch with them and call switchConversationLanguage once.
+- Do not treat short yes/no answers (yes, no, haan, nahi, haudu, illa) as a language switch.
 - Keep responses short and natural for phone calls (1-2 sentences).
 - Accept yes/no answers in any supported language:
   * English: yes / no
@@ -119,11 +185,18 @@ Language rules (critical):
   }
 
   private detectLanguage(text: string): LanguageCode {
-    // Catch common Romanized speech before the generic Latin-script fallback.
-    // Example: "haan" is Hindi and "haudu" is Kannada even though both use A-Z.
+    const fromKeywords = this.detectRomanizedLanguage(text);
+    if (fromKeywords !== 'unknown') return fromKeywords;
+    return this.detectScriptLanguage(text);
+  }
+
+  private detectRomanizedLanguage(text: string): LanguageCode {
     if (this.matchesLanguageKeywords(text, 'hi-IN')) return 'hi-IN';
     if (this.matchesLanguageKeywords(text, 'kn-IN')) return 'kn-IN';
+    return 'unknown';
+  }
 
+  private detectScriptLanguage(text: string): LanguageCode {
     const kannadaChars = (text.match(KANNADA_RE) ?? []).length;
     const devanagariChars = (text.match(DEVANAGARI_RE) ?? []).length;
     const latinChars = (text.match(LATIN_RE) ?? []).length;
@@ -131,7 +204,7 @@ Language rules (critical):
     if (kannadaChars > devanagariChars && kannadaChars > 0) return 'kn-IN';
     if (devanagariChars > kannadaChars && devanagariChars > 0) return 'hi-IN';
     if (latinChars > 0) return 'en-IN';
-    return 'en-IN';
+    return 'unknown';
   }
 
   private matchesLanguageKeywords(

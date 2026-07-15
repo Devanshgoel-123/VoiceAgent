@@ -11,11 +11,15 @@ export function applySpokenLanguage(
   tts: unknown,
   language: LanguageCode,
   provider: TtsProvider,
+  elevenLabsVoiceId?: string,
 ): string {
   const speaker = new LanguageManager(language).getTtsSpeaker(language);
   const update =
     provider === 'elevenlabs'
-      ? { language }
+      ? {
+          language,
+          ...(elevenLabsVoiceId ? { voiceId: elevenLabsVoiceId } : {}),
+        }
       : { targetLanguageCode: language, speaker };
 
   if (
@@ -28,7 +32,7 @@ export function applySpokenLanguage(
       update,
     );
     callDebug(
-      `[CALL] pipeline.language:tts_updated provider=${provider} language=${language} voice=${provider === 'elevenlabs' ? 'configured voice' : speaker}`,
+      `[CALL] pipeline.language:tts_updated provider=${provider} language=${language} voice=${provider === 'elevenlabs' ? (elevenLabsVoiceId ?? 'default') : speaker}`,
     );
   } else {
     callDebug(
@@ -36,5 +40,5 @@ export function applySpokenLanguage(
     );
   }
 
-  return provider === 'elevenlabs' ? 'configured voice' : speaker;
+  return provider === 'elevenlabs' ? (elevenLabsVoiceId ?? 'default') : speaker;
 }

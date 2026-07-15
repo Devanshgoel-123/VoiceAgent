@@ -1,7 +1,7 @@
 {
   "name": "gully-voice-agent",
   "version": "0.1.0",
-  "description": "Modular Sarvam AI + LiveKit voice agents for Gullynest automated outbound calls",
+  "description": "Modular Sarvam AI + LiveKit voice agents for Galynest automated outbound calls",
   "type": "module",
   "engines": {
     "node": ">=20.0.0"
@@ -20,8 +20,12 @@
     "daemon:stop": "lk agent daemon stop",
     "dev:api": "tsx src/api/server.ts",
     "trigger:call": "tsx src/scripts/trigger-call.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:push": "drizzle-kit push",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:console:text": "npm run console:text",
+    "test:console:voice": "npm run console:worker",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -30,13 +34,16 @@
     "@livekit/agents-plugin-openai": "^1.5.1",
     "@livekit/agents-plugin-sarvam": "^1.5.1",
     "dotenv": "^16.4.0",
+    "drizzle-orm": "^0.45.2",
     "express": "^4.21.0",
     "livekit-server-sdk": "^2.15.0",
+    "postgres": "^3.4.9",
     "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

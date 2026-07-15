@@ -10,6 +10,8 @@ export interface VoicePipelineBundle {
   llm: unknown;
   tts: unknown;
   ttsProvider: TtsProvider;
+  /** Preserved across mid-call language switches for ElevenLabs. */
+  elevenLabsVoiceId?: string;
 }
 
 export interface VoicePipelineOptions {

@@ -11,7 +11,6 @@ export interface PropertyPromptParams {
   city?: string;
 }
 
-/** Fixed opening line used when the owner stays silent / first speaks (no LLM delay). */
 export function buildOpeningGreeting(
   params: PropertyPromptParams,
   language: LanguageCode = 'en-IN',
@@ -41,6 +40,49 @@ export function buildOpeningGreeting(
   );
 }
 
+/** LLM instructions for the opening turn (model writes the spoken text). */
+export function buildOpeningInstructions(
+  params: PropertyPromptParams,
+  language: LanguageCode = 'en-IN',
+): string {
+  const languageName =
+    language === 'hi-IN' ? 'Hindi' : language === 'kn-IN' ? 'Kannada' : 'English';
+
+  return (
+    `Speak ONLY in ${languageName}. ` +
+    `Introduce yourself as ${params.callerName} from ${params.companyName} to ${params.ownerName}. ` +
+    `Mention the property at ${params.propertyAddress}. ` +
+    `Ask once whether it is still available for rent. ` +
+    `Keep it to 1-2 short sentences. Do not call any tools.`
+  );
+}
+
+/** LLM instructions for the outcome-specific closing (model writes the spoken text). */
+export function buildClosingInstructions(
+  outcome: 'yes' | 'no',
+  language: LanguageCode = 'en-IN',
+): string {
+  const languageName =
+    language === 'hi-IN' ? 'Hindi' : language === 'kn-IN' ? 'Kannada' : 'English';
+
+  if (outcome === 'yes') {
+    return (
+      `Speak ONLY in ${languageName}. ` +
+      `Thank the owner briefly. Say the Galinest team will continue searching for tenants, ` +
+      `and that we will call them as soon as we find a tenant. ` +
+      `Recommend saving this number as Galinest Property Team. Wish them a good day. ` +
+      `Keep it to 2-3 short sentences. Do not ask any new questions. Do not call any tools.`
+    );
+  }
+
+  return (
+    `Speak ONLY in ${languageName}. ` +
+    `Thank them for the information. Say we will update our records and will not disturb them again. ` +
+    `If they want a tenant later, they can visit Galinest dot com. Wish them a good day. ` +
+    `Keep it to 2-3 short sentences. Do not ask any new questions. Do not call any tools.`
+  );
+}
+
 export function buildPropertyAvailabilityInstructions(
   params: PropertyPromptParams,
 ): string {
@@ -56,22 +98,23 @@ PROPERTY DETAILS:
 ${propertyDesc}
 
 CONVERSATION FLOW:
-1. If the owner greets first (Hello / Haan / Namaste), say you are ${params.callerName} from ${params.companyName} in THEIR language, then ask availability.
-2. If you already introduced yourself (system opening), do not repeat the full intro — just continue naturally in their language.
+1. If the owner greets first (Hello / Haan / Namaste), introduce yourself as ${params.callerName} from ${params.companyName} in THEIR language, then ask availability.
+2. If you already introduced yourself, do not repeat the full intro — continue naturally in their language.
 3. Wait for a clear yes or no, then call recordPropertyAvailability.
-4. Stop speaking. The system will play the correct yes/no closing message and hang up automatically.
+4. After that tool, stop. The system will ask you to speak a short closing, then hang up.
 
 RULES:
 - Ask ONLY the availability question. Do not ask about visits, tenants, or anything else.
 - Keep replies SHORT (one or two sentences). Latency matters.
 - Always reply in the same language the owner is using (English, Hindi, or Kannada).
-- If they switch languages mid-call, switch immediately and call switchConversationLanguage.
+- If they clearly switch languages mid-call (full sentence in a new language), switch with them and call switchConversationLanguage once.
+- Do NOT switch language just because they said yes/no/haan/nahi/haudu/illa — those answers keep the current conversation language.
 - Never use square brackets. Say "${params.companyName}" plainly.
 - Always introduce yourself as "${params.callerName} from ${params.companyName}", never as only the company name.
 - "Hello" and "hi" are greetings, not goodbye — keep going.
 - Keep the call under 1 minute.
-- After calling recordPropertyAvailability, do not speak and do not call any other tool.
-- Never say "thank you", "confirmed", or goodbye yourself — the system plays the full outcome-specific closing.
+- After calling recordPropertyAvailability, do not speak until the system asks for the closing.
+- Never invent your own goodbye before the closing turn.
 `.trim();
 }
 

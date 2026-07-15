@@ -36,8 +36,24 @@ describe('LanguageManager', () => {
   });
 
   it('detects Romanized Hindi and Kannada', () => {
-    expect(manager.detectFromText('haan ji').language).toBe('hi-IN');
-    expect(manager.detectFromText('haudu').language).toBe('kn-IN');
+    expect(new LanguageManager().detectFromText('haan ji meri property').language).toBe(
+      'hi-IN',
+    );
+    expect(new LanguageManager().detectFromText('haudu idu available').language).toBe(
+      'kn-IN',
+    );
+  });
+
+  it('keeps conversation language on short yes/no answers', () => {
+    const hiMgr = new LanguageManager('hi-IN');
+    expect(hiMgr.resolveSpokenLanguage('yes', 'en-IN')).toBeNull();
+    expect(hiMgr.resolveSpokenLanguage('haan', 'hi-IN')).toBeNull();
+    expect(hiMgr.getCurrentLanguage()).toBe('hi-IN');
+
+    const enMgr = new LanguageManager('en-IN');
+    expect(enMgr.resolveSpokenLanguage('हाँ प्रॉपर्टी उपलब्ध है', 'hi-IN')).toBe(
+      'hi-IN',
+    );
   });
 
   it('detects English negative', () => {
@@ -62,11 +78,11 @@ describe('TTS provider language updates', () => {
       },
     };
 
-    applySpokenLanguage(tts, 'hi-IN', 'elevenlabs');
+    applySpokenLanguage(tts, 'hi-IN', 'elevenlabs', 'voice-abc');
     applySpokenLanguage(tts, 'kn-IN', 'sarvam');
 
     expect(updates).toEqual([
-      { language: 'hi-IN' },
+      { language: 'hi-IN', voiceId: 'voice-abc' },
       { targetLanguageCode: 'kn-IN', speaker: 'priya' },
     ]);
   });
@@ -98,7 +114,7 @@ describe('PropertyAvailabilityCallJob', () => {
         rentAmount: 25000,
         city: 'Bangalore',
       },
-      callerName: 'Jitesh',
+      callerName: 'Aditi',
       metadata: { tts_provider: 'elevenlabs' },
     });
 
@@ -106,7 +122,7 @@ describe('PropertyAvailabilityCallJob', () => {
     expect(meta.phone_number).toBe('+919876543210');
     expect(meta.job_type).toBe('property_availability');
     expect(meta.owner_name).toBe('Ramesh');
-    expect(meta.caller_name).toBe('Jitesh');
+    expect(meta.caller_name).toBe('Aditi');
     expect(meta.property_id).toBe('PROP-001');
     expect(meta.rent_amount).toBe(25000);
     expect(meta.tts_provider).toBe('elevenlabs');
