@@ -1,5 +1,5 @@
 import { getJobContext, type JobContext, log, voice } from '@livekit/agents';
-import { callDebug, callError, callWarn } from '../core/call-logger.js';
+import { callDebug, callError, callInfo, callWarn } from '../core/call-logger.js';
 import { safeCompleteCallLog } from '../db/call-log-repository.js';
 import { getSettings } from '../config/settings.js';
 import type { OwnerOutcome } from '../jobs/call-log-types.js';
@@ -12,11 +12,16 @@ import {
 import { applySpokenLanguage } from './spoken-language.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
+/** Minimal goodbye spoken only if we never captured a yes/no outcome. */
 export const DEFAULT_GOODBYE_TEXT = 'Thank you. Goodbye.';
+
+/** The only two outcomes that trigger a scripted-style closing + hangup. */
 export type AvailabilityOutcome = 'yes' | 'no';
 
 /**
- * Business closing spoken after recording availability.
+ * Deterministic fallback closing, used ONLY when the LLM fails to speak its own
+ * closing turn in time. The live path lets the model generate the closing so it
+ * matches the owner's language and phrasing; this hard-coded copy is the safety net.
  * "dot com" is intentional: phone TTS pronounces it more clearly than ".com".
  */
 export function availabilityClosing(
@@ -51,6 +56,7 @@ export function availabilityClosing(
   );
 }
 
+/** Bare "thank you" fallback in the owner's language when no outcome was captured. */
 export function goodbyeForLanguage(language: LanguageCode): string {
   if (language === 'hi-IN') {
     return 'धन्यवाद।';
@@ -60,47 +66,58 @@ export function goodbyeForLanguage(language: LanguageCode): string {
   }
   return DEFAULT_GOODBYE_TEXT;
 }
-/** Long outcome-specific closing at slow TTS speed needs substantial playout headroom. */
-export const GOODBYE_PLAYOUT_TIMEOUT_MS = 20000;
-/** Base SIP flush after local playout; scaled up further when TTS_SPEED < 1. */
-export const GOODBYE_SIP_DRAIN_GRACE_MS = 1_500;
-/** Leave the tool stack, then wait for the model closing speech and hang up. */
-export const HANGUP_DEFER_MS = 800;
-/** If session Close never fires after shutdown, delete the room anyway. */
-export const CLOSE_FALLBACK_TIMEOUT_MS = 1500;
 
-/** How long to wait for the owner to speak after the call connects before we introduce ourselves. */
+/**
+ * Max time to wait for the closing to finish playing before forcing hangup.
+ * Must comfortably exceed a 2-3 sentence closing at slow TTS speed (Hindi /
+ * Kannada run longer) — too small clips the last sentence via force-interrupt.
+ */
+export const GOODBYE_PLAYOUT_TIMEOUT_MS = 20_000;
+/**
+ * Extra pause after local playout so the SIP/PSTN leg flushes the last audio.
+ * Local "listening" fires when playout ends locally, but the final words are
+ * still travelling over the phone network — too small a value clips the tail.
+ */
+export const GOODBYE_SIP_DRAIN_GRACE_MS = 3_000;
+/** Small gap after the availability tool so its own reply turn can start. */
+export const HANGUP_DEFER_MS = 800;
+/** If the session's Close event never fires after shutdown, hang up anyway. */
+export const CLOSE_FALLBACK_TIMEOUT_MS = 1500;
+/** Silence window after connect before the agent introduces itself. */
 export const OWNER_OPENING_WAIT_MS = 1000;
 /**
- * Outbound endpointing delay (ms) after STT thinks the user stopped talking.
+ * Endpointing delay (ms) after STT thinks the owner stopped talking.
  * Lower = faster replies; too low risks cutting the owner off mid-sentence.
  */
 export const OUTBOUND_ENDPOINTING_MIN_MS = 250;
-/** Fallback commit after a final STT transcript if LiveKit has not ended the turn yet. */
+/** Fallback commit after a final transcript if LiveKit hasn't ended the turn. */
 export const TURN_COMMIT_FALLBACK_MS = 250;
 
 export type CallMetadata = Record<string, unknown>;
 
+/**
+ * The surface the domain agent (property-availability) calls into. Keeping this
+ * as an interface lets the agent stay decoupled from LiveKit internals: it only
+ * needs to record an outcome, keep language in sync, and ask for the hangup.
+ */
 export interface CallLifecycle {
-  /**
-   * After availability is recorded: wait for the model closing speech, then hang up.
-   * Idempotent.
-   */
+  /** After availability is recorded: play the closing, then hang up. Idempotent. */
   scheduleHangup(outcome?: AvailabilityOutcome): void;
 
   /**
-   * Switch TTS (+ tracked language) so greeting/replies match the owner.
-   * Safe to call on every turn; no-ops when language is unchanged.
+   * Retune TTS (+ tracked language) so replies match the owner.
+   * Safe to call on every turn; no-ops when the language is unchanged.
    */
   setSpokenLanguage(language: LanguageCode, reason?: string): void;
 
-  /** Current conversation language tracked by the session. */
+  /** Current conversation language, used to build the closing in the right language. */
   getCurrentLanguage(): LanguageCode;
 
-  /** Record owner yes/no/other before the closing turn. */
+  /** Persist the owner's yes/no/other answer before the closing turn plays. */
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void;
 }
 
+/** Config for armOpeningGreeting: how long to wait, and how to build the intro. */
 export interface OpeningGreetingOptions {
   /** Max silence after mic is ready before the agent introduces itself. */
   waitMs?: number;
@@ -115,49 +132,58 @@ export interface LiveKitCallSessionOptions {
   pipeline: VoicePipelineBundle;
   isOutboundCall: boolean;
   participantIdentity?: string;
-  goodbyeText?: string;
   callRecord?: CallSessionRecord;
   logger?: ReturnType<typeof log>;
 }
 
 /**
- * Owns AgentSession lifecycle: start, turn logging, goodbye, session shutdown, room delete.
- * Layman: this is the "call room manager" — it starts the conversation engine and ends the call cleanly.
+ * Owns the whole AgentSession lifecycle for one call: build the STT/LLM/TTS
+ * session, track the owner's language, decide when to greet, and — once an
+ * availability answer is recorded — play the closing and hang up cleanly
+ * (shut down the session and delete the LiveKit room, which drops the PSTN leg).
  */
 export class LiveKitCallSession implements CallLifecycle {
   private readonly ctx: JobContext;
   private readonly logger: ReturnType<typeof log>;
-  private readonly goodbyeText: string;
   private readonly isOutboundCall: boolean;
   private readonly participantIdentity?: string;
   private readonly pipeline: VoicePipelineBundle;
   private readonly callRecord?: CallSessionRecord;
-  private persistStarted = false;
+  private readonly languageManager = new LanguageManager('en-IN');
+
   private session?: voice.AgentSession;
-  private hangupStarted = false;
+
+  // Hangup / shutdown guards (each step must run exactly once).
   private hangupScheduled = false;
-  private availabilityOutcome?: AvailabilityOutcome;
+  private hangupStarted = false;
   private roomDeleted = false;
   private closeResolved = false;
+  private persistStarted = false;
+  private availabilityOutcome?: AvailabilityOutcome;
   private resolveClose?: () => void;
   private closePromise?: Promise<void>;
+
+  // Opening-greeting state machine (see armOpeningGreeting).
   private openingTimer?: ReturnType<typeof setTimeout>;
   private openingArmed = false;
   private openingGreeted = false;
-  /** Owner started speaking during opening; wait for final transcript to pick language. */
+  /** Owner started speaking during the opening window; let the LLM answer that turn. */
   private pendingOwnerLanguageGreeting = false;
-  private skipNextTurnCommit = false;
   private openingBuildInstructions?: (language: LanguageCode) => string;
   private preferredOpeningLanguage: LanguageCode = 'en-IN';
-  private readonly languageManager = new LanguageManager('en-IN');
-  /** Last language pushed into Sarvam TTS (avoid redundant updateOptions). */
+
+  /** Last language pushed into TTS — avoids redundant updateOptions() calls. */
   private appliedTtsLanguage: LanguageCode | null = null;
-  private latestSpeechHandle?: { waitForPlayout(): Promise<void> };
+
+  // Closing-playout tracking: used to know whether the model's closing turn
+  // already finished by the time the deferred hangup fires.
+  private agentState: voice.AgentState = 'initializing';
+  private hangupScheduledAt = 0;
+  private lastAgentSpeechEndedAt = 0;
 
   constructor(options: LiveKitCallSessionOptions) {
     this.ctx = options.jobContext;
     this.logger = options.logger ?? log().child({ room: options.jobContext.room.name });
-    this.goodbyeText = options.goodbyeText ?? DEFAULT_GOODBYE_TEXT;
     this.isOutboundCall = options.isOutboundCall;
     this.participantIdentity = options.participantIdentity;
     this.pipeline = options.pipeline;
@@ -168,7 +194,11 @@ export class LiveKitCallSession implements CallLifecycle {
     );
   }
 
-  /** Layman: create the conversation engine and wire STT/LLM/TTS into it. */
+  /**
+   * Build the AgentSession and wire STT/LLM/TTS into it. Turn handling is tuned
+   * for phone calls: STT-based endpointing, preemptive generation for lower
+   * latency, and interruptions disabled outbound (PSTN echo causes false triggers).
+   */
   createSession(): voice.AgentSession {
     callDebug('[CALL] session.createSession:start', this.logger);
 
@@ -200,7 +230,7 @@ export class LiveKitCallSession implements CallLifecycle {
     return session;
   }
 
-  /** Layman: put the agent into the LiveKit room so it can hear and speak. */
+  /** Join the agent to the room so it can hear the owner and speak. */
   async start(agent: voice.Agent): Promise<void> {
     const session = this.requireSession();
     callDebug('[CALL] session.start:begin', this.logger);
@@ -227,7 +257,7 @@ export class LiveKitCallSession implements CallLifecycle {
     }
   }
 
-  /** Layman: tell the session "listen to this phone participant". */
+  /** Bind the session's audio I/O to a specific phone participant. */
   setParticipant(identity: string): void {
     callDebug(`[CALL] session.setParticipant identity=${identity}`, this.logger);
     this.requireSession()._roomIO?.setParticipant(identity);
@@ -235,8 +265,9 @@ export class LiveKitCallSession implements CallLifecycle {
   }
 
   /**
-   * Layman: after the phone is connected, wait briefly for "Hello?".
-   * If the owner stays silent, introduce Galynest and ask availability (no LLM wait).
+   * After connect, wait briefly for the owner to say "Hello?". If they speak
+   * first, we let the LLM answer in their language; if they stay silent past
+   * waitMs, we proactively introduce ourselves and ask about availability.
    */
   armOpeningGreeting(options: OpeningGreetingOptions): void {
     if (!this.isOutboundCall) return;
@@ -274,22 +305,19 @@ export class LiveKitCallSession implements CallLifecycle {
   }
 
   /**
-   * Layman: retune the agent's voice to English / Hindi / Kannada.
-   * Call this whenever we learn (or the owner switches) their language.
+   * Retune the agent's TTS voice to English / Hindi / Kannada and track it for
+   * the transcript. No-ops if the language is already applied, so it's cheap to
+   * call on every owner turn.
    */
   setSpokenLanguage(language: LanguageCode, reason = 'manual'): void {
     const previous = this.languageManager.getCurrentLanguage();
     this.languageManager.setLanguage(language);
 
     if (this.appliedTtsLanguage === language) {
-      callDebug(
-        `[CALL] session.language:unchanged language=${language} reason=${reason}`,
-        this.logger,
-      );
       return;
     }
 
-    const speaker = applySpokenLanguage(
+    applySpokenLanguage(
       this.pipeline.tts,
       language,
       this.pipeline.ttsProvider,
@@ -297,16 +325,23 @@ export class LiveKitCallSession implements CallLifecycle {
     );
     this.appliedTtsLanguage = language;
     this.callRecord?.transcriptBuilder.addLanguage(language);
-    callDebug(
-      `[CALL] session.language:switched from=${previous} to=${language} provider=${this.pipeline.ttsProvider} voice=${speaker} reason=${reason}`,
-      this.logger,
-    );
+
+    // Only surface real mid-conversation switches (owner changed language),
+    // not the opening/closing setup retunes.
+    if (
+      previous !== language &&
+      (reason === 'stt_final' || reason === 'tool_switch')
+    ) {
+      callInfo(`language: ${previous} → ${language}`, this.logger);
+    }
   }
 
+  /** Current conversation language; the closing is built in this language. */
   getCurrentLanguage(): LanguageCode {
     return this.languageManager.getCurrentLanguage();
   }
 
+  /** Store the owner's answer + summary on the call record for later persistence. */
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void {
     this.callRecord?.recordOwnerOutcome(outcome, summary);
     callDebug(
@@ -315,7 +350,11 @@ export class LiveKitCallSession implements CallLifecycle {
     );
   }
 
-  /** Ask the LLM to generate the opening intro (no hardcoded spoken text). */
+  /**
+   * Ask the LLM to speak the opening intro (no hardcoded text) so it matches the
+   * chosen language. Fires either on the silence timeout or when we decide the
+   * owner's first turn should be answered.
+   */
   private generateOpeningReply(language: LanguageCode, reason: string): void {
     if (this.openingGreeted || this.hangupStarted) return;
     this.openingGreeted = true;
@@ -334,18 +373,18 @@ export class LiveKitCallSession implements CallLifecycle {
       this.requireSession().generateReply({
         instructions,
         toolChoice: 'none',
-        allowInterruptions: true,
+        // On phone calls, don't let PSTN echo / early owner words clip the intro.
+        allowInterruptions: !this.isOutboundCall,
       });
     } catch (error) {
       callError(`[CALL] session.opening:generate_fail error=${error}`, this.logger);
     }
   }
 
-
   /**
-   * Layman: thank the owner and hang up — scheduled after the availability tool.
-   * We intentionally do not wait for the parent speech handle: after a tool-only
-   * turn, LiveKit can sit in "speaking" forever with no playout completion.
+   * Called by the availability tool once the owner answers yes/no. Defers briefly
+   * so the tool's own reply turn (the closing) can start, then plays the closing
+   * and hangs up. Idempotent — repeated calls are ignored.
    */
   scheduleHangup(outcome?: AvailabilityOutcome): void {
     if (this.hangupStarted || this.hangupScheduled) {
@@ -354,6 +393,7 @@ export class LiveKitCallSession implements CallLifecycle {
     }
     this.availabilityOutcome = outcome;
     this.hangupScheduled = true;
+    this.hangupScheduledAt = Date.now();
     this.clearOpeningGreeting('hangup');
     callDebug(`[CALL] session.scheduleHangup:deferred_ms=${HANGUP_DEFER_MS}`, this.logger);
 
@@ -363,17 +403,13 @@ export class LiveKitCallSession implements CallLifecycle {
     }, HANGUP_DEFER_MS);
   }
 
-  /** @deprecated Use {@link scheduleHangup}. */
-  afterSpeechComplete(_speechHandle?: { addDoneCallback(cb: () => void): void }): void {
-    this.scheduleHangup();
-  }
-
-  /** Layman: keep the worker parked until the call fully ends. */
+  /** Returned to the worker so it stays alive until the call fully ends. */
   waitUntilClosed(): Promise<void> {
     callDebug('[CALL] session.waitUntilClosed:waiting', this.logger);
     return this.closePromise ?? Promise.resolve();
   }
 
+  /** Cancel the pending silence-timeout greeting (owner spoke, or we're hanging up). */
   private clearOpeningGreeting(reason: string): void {
     if (this.openingTimer) {
       clearTimeout(this.openingTimer);
@@ -385,6 +421,13 @@ export class LiveKitCallSession implements CallLifecycle {
     }
   }
 
+  /**
+   * Wires the session's events into: (1) transcript logging, (2) language
+   * detection/retuning on final transcripts, (3) opening-window handling, and
+   * (4) a fallback turn-commit timer for when STT marks a turn final but
+   * LiveKit hasn't ended it yet. Also records when the agent stops speaking,
+   * which the hangup path uses to know the closing already finished.
+   */
   private attachTurnLogging(session: voice.AgentSession): void {
     let agentState: voice.AgentState = 'initializing';
     let turnCommitTimer: ReturnType<typeof setTimeout> | undefined;
@@ -401,19 +444,26 @@ export class LiveKitCallSession implements CallLifecycle {
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
       agentState = ev.newState;
-      callDebug(`[CALL] session.state ${ev.oldState} -> ${ev.newState}`, this.logger);
+      this.agentState = ev.newState;
+      if (ev.oldState === 'speaking' && ev.newState !== 'speaking') {
+        this.lastAgentSpeechEndedAt = Date.now();
+      }
+      callInfo(`agent: ${ev.oldState} → ${ev.newState}`, this.logger);
       if (ev.newState === 'thinking' || ev.newState === 'speaking') {
         clearTurnCommitTimer();
         this.clearOpeningGreeting(`agent_state_${ev.newState}`);
       }
     });
 
-    session.on(voice.AgentSessionEventTypes.SpeechCreated, (ev) => {
-      this.latestSpeechHandle = ev.speechHandle;
-      callDebug(
-        `[CALL] session.speech_created id=${ev.speechHandle.id} source=${ev.source}`,
-        this.logger,
-      );
+    // Concise transcript: one line per finalized owner/agent message.
+    session.on(voice.AgentSessionEventTypes.ConversationItemAdded, (ev) => {
+      const item = ev.item;
+      if (item.type !== 'message') return;
+      const text = item.textContent?.trim();
+      if (!text) return;
+      const who =
+        item.role === 'user' ? 'owner' : item.role === 'assistant' ? 'agent' : item.role;
+      callInfo(`${who}: ${text}`, this.logger);
     });
 
     session.on(voice.AgentSessionEventTypes.Error, (ev) => {
@@ -472,12 +522,6 @@ export class LiveKitCallSession implements CallLifecycle {
 
       callDebug(`[CALL] session.stt:final transcript="${ev.transcript}"`, this.logger);
 
-      if (this.skipNextTurnCommit) {
-        this.skipNextTurnCommit = false;
-        callDebug('[CALL] session.turn:commit_skipped reason=opening_greeting', this.logger);
-        return;
-      }
-
       clearTurnCommitTimer();
       turnCommitTimer = setTimeout(() => {
         turnCommitTimer = undefined;
@@ -491,6 +535,7 @@ export class LiveKitCallSession implements CallLifecycle {
     });
   }
 
+  /** Build the promise waitUntilClosed() returns, resolved when the session closes. */
   private createClosePromise(session: voice.AgentSession): Promise<void> {
     return new Promise<void>((resolve) => {
       this.resolveClose = resolve;
@@ -503,10 +548,12 @@ export class LiveKitCallSession implements CallLifecycle {
   }
 
   /**
-   * Wait for the model-generated closing (from the tool reply), then hang up.
-   * Fallback to a short scripted line only if no closing speech starts.
-   *
-   * Always shut down with drain:false and delete the room as a hard hangup.
+   * The heart of a clean hangup. After an availability answer, the LLM has
+   * already been asked to speak its own closing turn; we wait for that speech to
+   * actually play (observed via speaking -> listening state) rather than trusting
+   * the tool's speech handle, which can resolve before the post-tool audio starts.
+   * If the model never speaks in time we play a scripted fallback, then shut the
+   * session down (drain:false) and delete the room to drop the PSTN leg.
    */
   private async playGoodbyeAndHangup(): Promise<void> {
     if (this.hangupStarted) {
@@ -527,34 +574,45 @@ export class LiveKitCallSession implements CallLifecycle {
     let goodbyeTimedOut = false;
 
     try {
-      if (this.goodbyeText !== DEFAULT_GOODBYE_TEXT) {
-        callDebug(
-          `[CALL] session.goodbye:say_custom language=${language} text="${this.goodbyeText}"`,
-          this.logger,
-        );
-        this.callRecord?.transcriptBuilder.addAssistantText(this.goodbyeText, 'closing');
-        const speech = session.say(this.goodbyeText, { allowInterruptions: false });
-        goodbyeTimedOut = await raceWithTimeout(
-          speech.waitForPlayout(),
-          GOODBYE_PLAYOUT_TIMEOUT_MS,
-        );
-      } else if (this.availabilityOutcome) {
-        // The existing speech handle owns the complete LLM turn, including the
-        // post-tool closing. Await that exact handle; never race it with another
-        // generated/scripted closing, which would queue duplicate audio.
-        if (this.latestSpeechHandle) {
+      if (this.availabilityOutcome) {
+        // A tool-call speech handle can resolve before its post-tool audio starts.
+        // Wait for observable playback states instead: thinking -> speaking -> listening.
+        const closingAlreadyFinished =
+          this.lastAgentSpeechEndedAt >= this.hangupScheduledAt;
+        const closingStarted =
+          closingAlreadyFinished ||
+          this.agentState === 'speaking' ||
+          (await this.waitForAgentState('speaking', 15_000));
+
+        if (closingStarted) {
           callDebug(
-            `[CALL] session.goodbye:await_original_reply language=${language} outcome=${this.availabilityOutcome}`,
+            `[CALL] session.goodbye:model_closing_started language=${language} outcome=${this.availabilityOutcome}`,
             this.logger,
           );
-          goodbyeTimedOut = await raceWithTimeout(
-            this.latestSpeechHandle.waitForPlayout(),
-            GOODBYE_PLAYOUT_TIMEOUT_MS,
-          );
+          const closingFinished =
+            closingAlreadyFinished ||
+            (await this.waitForAgentState(
+              'listening',
+              GOODBYE_PLAYOUT_TIMEOUT_MS,
+            ));
+          goodbyeTimedOut = !closingFinished;
         } else {
+          // Cancel the pending model turn before playing fallback, so both can
+          // never be queued and spoken one after the other.
+          callWarn('[CALL] session.goodbye:model_closing_start_timeout', this.logger);
+          try {
+            session.interrupt({ force: true });
+          } catch (error) {
+            callWarn(
+              `[CALL] session.goodbye:cancel_pending_fail error=${error}`,
+              this.logger,
+            );
+          }
+          await sleep(200);
+
           const fallback = availabilityClosing(this.availabilityOutcome, language);
           callWarn(
-            `[CALL] session.goodbye:fallback_say reason=no_speech_handle text="${fallback}"`,
+            `[CALL] session.goodbye:fallback_say reason=model_never_spoke text="${fallback}"`,
             this.logger,
           );
           this.callRecord?.transcriptBuilder.addAssistantText(fallback, 'closing');
@@ -619,7 +677,56 @@ export class LiveKitCallSession implements CallLifecycle {
     }, CLOSE_FALLBACK_TIMEOUT_MS);
   }
 
-  /** Delete room + shut down job. Idempotent hard hangup. */
+  /**
+   * Resolve true once the agent reaches `target` state (e.g. 'speaking' then
+   * 'listening'), or false on timeout. This is how the hangup path tracks that
+   * the closing speech actually played instead of guessing from speech handles.
+   */
+  private waitForAgentState(
+    target: voice.AgentState,
+    timeoutMs: number,
+  ): Promise<boolean> {
+    if (this.agentState === target) return Promise.resolve(true);
+
+    return new Promise((resolve) => {
+      const session = this.session;
+      if (!session) {
+        resolve(false);
+        return;
+      }
+
+      const timer = setTimeout(() => {
+        cleanup();
+        resolve(false);
+      }, timeoutMs);
+
+      const onStateChanged = (ev: { newState: voice.AgentState }) => {
+        if (ev.newState === target) {
+          cleanup();
+          resolve(true);
+        }
+      };
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        session.off(
+          voice.AgentSessionEventTypes.AgentStateChanged,
+          onStateChanged,
+        );
+      };
+
+      session.on(
+        voice.AgentSessionEventTypes.AgentStateChanged,
+        onStateChanged,
+      );
+    });
+  }
+
+  /**
+   * The single terminal step: delete the room, persist the call log + recording,
+   * shut the job down, and resolve waitUntilClosed(). Runs at most once no matter
+   * which path triggers it (normal shutdown, Close event, or fallback timeout).
+   */
   private async finalizeHangup(reason: string): Promise<void> {
     if (this.closeResolved) {
       callDebug(
@@ -671,6 +778,7 @@ export class LiveKitCallSession implements CallLifecycle {
     this.resolveClose?.();
   }
 
+  /** Write the final call snapshot to the DB and a local JSON file. Once only. */
   private async persistCallLog(
     report?: ReturnType<JobContext['makeSessionReport']>,
   ): Promise<void> {
@@ -694,6 +802,7 @@ export class LiveKitCallSession implements CallLifecycle {
     }
   }
 
+  /** Guard so callers get a clear error if they use the session before createSession(). */
   private requireSession(): voice.AgentSession {
     if (!this.session) {
       throw new Error('LiveKitCallSession.createSession() must be called first');
@@ -706,6 +815,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Await `promise`, but resolve `true` (timed out) if it doesn't settle in time. */
 async function raceWithTimeout(promise: Promise<void>, timeoutMs: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

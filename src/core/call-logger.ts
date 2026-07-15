@@ -39,10 +39,14 @@ export function isCallDebugEnabled(): boolean {
   return parseBool(process.env.CALL_DEBUG_LOGGING, isDeveloperEnv());
 }
 
-/** Stage / flow logs — developer only (or CALL_DEBUG_LOGGING=true). */
-export function callDebug(message: string, logger?: LiveKitLogger): void {
-  if (!isCallDebugEnabled()) return;
-  resolveLogger(logger).info(message);
+/**
+ * Verbose stage / flow tracing — intentionally a no-op.
+ * We deliberately keep only concise transcript, agent-state, and
+ * language-change logs. This stays as a no-op so the many existing call sites
+ * don't need to be touched (and can be re-enabled here if ever needed).
+ */
+export function callDebug(_message: string, _logger?: LiveKitLogger): void {
+  // no-op: verbose call tracing removed to keep logs minimal.
 }
 
 /** Always emitted — use sparingly for rare milestones. */
