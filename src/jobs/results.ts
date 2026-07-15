@@ -62,7 +62,7 @@ export function buildCallResult(params: {
     jobId: params.jobId,
     status: 'completed',
     propertyStillAvailable: params.propertyAvailable,
-    gullynestShouldFindTenants: params.findTenants ?? 'not_asked',
+    GalynestShouldFindTenants: params.findTenants ?? 'not_asked',
     conversationLanguage: params.language,
     transcriptSummary: params.summary,
     rawMetadata: params.metadata ?? {},

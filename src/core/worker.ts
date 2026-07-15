@@ -3,9 +3,16 @@ import { LiveKitCallSession, OWNER_OPENING_WAIT_MS } from '../adapters/livekit-c
 import { LiveKitSipAdapter } from '../adapters/livekit-sip-adapter.js';
 import { SarvamVoicePipeline } from '../adapters/sarvam-voice-pipeline.js';
 import type { VoicePipelineProvider } from '../adapters/voice-pipeline.js';
-import { buildOpeningGreeting } from '../agents/property-availability/prompts.js';
+import { buildOpeningInstructions } from '../agents/property-availability/prompts.js';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
+import {
+  safeMarkCallInProgress,
+  safeMarkCallAnswered,
+  safeMarkCallFailed,
+  safeMarkCallNoAnswer,
+} from '../db/call-log-repository.js';
+import { CallSessionRecord } from '../jobs/call-session-record.js';
 import { callDebug, callError, callInfo, callWarn } from './call-logger.js';
 import { LanguageManager } from './language-manager.js';
 
@@ -49,7 +56,7 @@ export function createWorkerConfig(
       const isLocalTest = ctx.isFakeJob;
       const effectiveMetadata =
         isLocalTest && Object.keys(metadata).length === 0
-          ? getConsoleTestMetadata()
+          ? getConsoleTestMetadata(settings)
           : metadata;
 
       if (isLocalTest) {
@@ -99,12 +106,17 @@ export function createWorkerConfig(
       );
 
       callDebug('[CALL] worker.entry:create_call_session', logger);
+      const callRecord = new CallSessionRecord(effectiveMetadata);
+      callRecord.markInProgress();
+      await safeMarkCallInProgress(callRecord.jobId);
+
       const callSession = new LiveKitCallSession({
         jobContext: ctx,
         pipeline,
         isOutboundCall,
         participantIdentity,
         logger,
+        callRecord,
       });
 
       callSession.createSession();
@@ -129,8 +141,10 @@ export function createWorkerConfig(
           await sip.waitForMicrophone(ctx.room, participantIdentity);
           callDebug('[CALL] worker.entry:bind_participant', logger);
           callSession.setParticipant(participantIdentity);
+          callRecord.markAnswered();
+          await safeMarkCallAnswered(callRecord.jobId);
 
-          // Max 2.5s silence after connect → introduce Gullynest (in preferred/detected language).
+          // Max 2.5s silence after connect → introduce Galynest (in preferred/detected language).
           const openingParams = {
             companyName:
               (effectiveMetadata.company_name as string) ?? settings.companyName,
@@ -147,11 +161,20 @@ export function createWorkerConfig(
           callSession.armOpeningGreeting({
             waitMs: OWNER_OPENING_WAIT_MS,
             preferredLanguage,
-            buildText: (language) => buildOpeningGreeting(openingParams, language),
+            buildInstructions: (language) =>
+              buildOpeningInstructions(openingParams, language),
           });
           callDebug('[CALL] worker.entry:outbound_ready', logger);
         } catch (error) {
           callError(`[CALL] worker.entry:outbound_fail error=${error}`, logger);
+          const message = String(error);
+          if (message.includes('Timed out waiting for microphone')) {
+            callRecord.markNoAnswer(message);
+            await safeMarkCallNoAnswer(callRecord.jobId, message);
+          } else {
+            callRecord.markFailed(message);
+            await safeMarkCallFailed(callRecord.jobId, message);
+          }
           ctx.shutdown();
           return;
         }
@@ -181,7 +204,7 @@ function parseMetadata(raw: string): CallMetadata {
 }
 
 /** Layman: fake property details used only for local console testing. */
-function getConsoleTestMetadata(): CallMetadata {
+function getConsoleTestMetadata(settings: Settings): CallMetadata {
   return {
     job_id: 'console-test-job',
     job_type: 'property_availability',
@@ -192,6 +215,8 @@ function getConsoleTestMetadata(): CallMetadata {
     bhk: '2 BHK',
     rent_amount: 25000,
     city: 'Bangalore',
-    company_name: 'Gullynest',
+    company_name: settings.companyName,
+    caller_name: settings.callerName,
+    tts_provider: settings.ttsProvider,
   };
 }

@@ -1,6 +1,6 @@
 # Gully Voice Agent
 
-**Modular Sarvam AI + LiveKit voice agent for Gullynest automated outbound calls.**  
+**Modular Sarvam AI + LiveKit voice agent for Galynest automated outbound calls.**  
 Calls property owners in **English, Hindi, or Kannada** and asks **one question**: is the property still available?
 
 Built with **TypeScript**, **LiveKit Agents (Node.js)**, **Twilio SIP** (PSTN), **Sarvam AI** (Saaras STT + Sarvam LLM), and selectable **Sarvam or ElevenLabs TTS**.
@@ -9,14 +9,14 @@ Built with **TypeScript**, **LiveKit Agents (Node.js)**, **Twilio SIP** (PSTN), 
 
 ## Overview
 
-When Gullynest needs to verify a listing, this system:
+When Galynest needs to verify a listing, this system:
 
 1. Receives a call job (API or CLI) with owner phone + property details
 2. Dispatches a LiveKit agent job
 3. Dials the owner over the normal phone network (PSTN) via Twilio + LiveKit SIP
 4. Runs a short voice conversation (STT → LLM → TTS)
 5. Records yes/no availability, says thank you, hangs up
-6. Saves a JSON result you can fetch later
+6. Persists call outcome to Postgres (when `DATABASE_URL` is set) and a JSON file on the worker
 
 ---
 
@@ -32,7 +32,7 @@ Think of the call as three layers: **phone network**, **call room**, and **AI br
 | **ElevenLabs** | Optional natural voice | Replaces only the TTS “mouth” for more natural speech. Sarvam remains the STT “ears” and LLM “brain”. |
 | **This repo (worker + API)** | Your product logic | Decides *what* to ask, *when* to hang up, and *where* to save results. |
 
-**In one line:** Twilio dials the phone → LiveKit carries the audio and runs the agent → Sarvam understands and speaks → our code runs the Gullynest script.
+**In one line:** Twilio dials the phone → LiveKit carries the audio and runs the agent → Sarvam understands and speaks → our code runs the Galynest script.
 
 ```
 Owner's phone (PSTN)
@@ -63,7 +63,7 @@ Owner's phone (PSTN)
 │                        GULLY VOICE AGENT (TypeScript)                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  Gullynest Backend ──POST /calls/...──► Express API (src/api/server.ts)      │
+│  Galynest Backend ──POST /calls/...──► Express API (src/api/server.ts)      │
 │                                              │                               │
 │                                              │ AgentDispatchClient           │
 │                                              ▼                               │
@@ -113,7 +113,7 @@ Owner's phone (PSTN)
 
 ```mermaid
 sequenceDiagram
-    participant G as Gullynest / CLI
+    participant G as Galynest / CLI
     participant API as Express API
     participant LK as LiveKit Cloud
     participant W as Agent Worker
@@ -315,6 +315,30 @@ npm run trigger:call -- \
 curl http://localhost:8080/calls/results/{job_id}
 ```
 
+### 8. Call logging (Postgres + Drizzle)
+
+Set `DATABASE_URL` on both the **API** and **worker** (Render Postgres or local). Apply the schema once:
+
+```bash
+# with DATABASE_URL in .env
+psql "$DATABASE_URL" -f drizzle/0000_call_logs.sql
+# or: npm run db:push
+```
+
+Each call is tracked in `call_logs` with:
+
+| Field | Meaning |
+|-------|---------|
+| `status` | `dispatched` → `in_progress` → `completed` / `no_answer` / `failed` |
+| `answered` | Owner picked up |
+| `owner_outcome` | `yes`, `no`, `other` (unclear / inconclusive), or `not_asked` |
+| `success` | `true` when a clear yes/no was captured on a completed call |
+| `languages` | All language codes used during the call (e.g. `["hi-IN","en-IN"]`) |
+| `transcript` | JSON array of `{ role, text, language?, timestamp }` |
+| `transcript_summary` | Human-readable summary; for `other`, derived from what the owner said |
+
+`GET /calls/results/:jobId` and `GET /calls/results` read from Postgres when `DATABASE_URL` is set; otherwise they fall back to JSON files in `call_results/`.
+
 ---
 
 ## Multilingual support
@@ -358,8 +382,9 @@ curl http://localhost:8080/calls/results/{job_id}
 | `ELEVENLABS_MODEL` | No | Default `eleven_v3` (English/Hindi/Kannada). Use `eleven_flash_v2_5` only for lower-latency English/Hindi. |
 | `ELEVENLABS_TRANSPORT` | No | `http` (reliable default) or `websocket` (lower latency, currently susceptible to close code 1006) |
 | `SIP_OUTBOUND_TRUNK_ID` | For phone calls | Outbound SIP trunk (`ST_...`) |
+| `DATABASE_URL` | For DB logging | Postgres connection string (Drizzle). Enables `call_logs` persistence and API result reads |
 | `AGENT_NAME` | No | Dispatch name (default: `gully-property-availability-agent`) |
-| `COMPANY_NAME` | No | Brand name (default: `Gullynest`) |
+| `COMPANY_NAME` | No | Brand name (default: `Galynest`) |
 | `CALLER_NAME` | No | Spoken caller name (default: `Jitesh`); API `caller_name` can override it per call |
 | `API_HOST` / `API_PORT` | No | Trigger API bind address |
 
@@ -379,6 +404,8 @@ curl http://localhost:8080/calls/results/{job_id}
 | `npm run console:worker` | Terminal test (no phone) |
 | `npm run dev:api` | Express trigger API |
 | `npm run trigger:call` | CLI dispatch |
+| `npm run db:push` | Push Drizzle schema to Postgres |
+| `npm run db:generate` | Generate SQL migrations from schema |
 | `npm test` | Unit tests |
 | `npm run typecheck` | TypeScript check |
 
@@ -406,7 +433,7 @@ Import it from a worker, add a dispatch path, and expose an API route. Reuse the
 
 ## Production notes
 
-- Replace `CallResultStore` (JSON files) with Postgres/Redis
+- Set `DATABASE_URL` on API + worker for durable call logs (transcript, languages, outcome)
 - Put `APP_ENV=production` and keep `CALL_DEBUG_LOGGING` off unless debugging
 - Run a single healthy worker per environment; kill orphans before redeploy
 - Ensure TRAI DND compliance and owner consent
@@ -429,4 +456,4 @@ Import it from a worker, add a dispatch path, and expose an API route. Reuse the
 
 ## License
 
-Private — Gullynest internal use.
+Private — Galynest internal use.

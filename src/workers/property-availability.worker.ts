@@ -7,6 +7,9 @@ import { getSettings } from '../config/settings.js';
 import { createWorkerConfig } from '../core/worker.js';
 
 const settings = getSettings();
+console.log(
+  `[CALL] worker.config callerName=${settings.callerName} ttsProvider=${settings.ttsProvider} elevenVoiceId=${settings.elevenLabsVoiceId ?? 'default'}`,
+);
 const agentFactory = getAgentFactory('property_availability');
 const workerConfig = createWorkerConfig(agentFactory, { telephony: true, settings });
 

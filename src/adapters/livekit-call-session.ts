@@ -1,10 +1,15 @@
 import { getJobContext, type JobContext, log, voice } from '@livekit/agents';
 import { callDebug, callError, callWarn } from '../core/call-logger.js';
+import { safeCompleteCallLog } from '../db/call-log-repository.js';
 import { getSettings } from '../config/settings.js';
+import type { OwnerOutcome } from '../jobs/call-log-types.js';
+import { CallSessionRecord } from '../jobs/call-session-record.js';
+import { saveCallResultSnapshot } from '../jobs/persist-call-result.js';
 import {
   LanguageManager,
   type LanguageCode,
 } from '../core/language-manager.js';
+import { buildClosingInstructions } from '../agents/property-availability/prompts.js';
 import { applySpokenLanguage } from './spoken-language.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
@@ -15,19 +20,34 @@ export type AvailabilityOutcome = 'yes' | 'no';
  * Business closing spoken after recording availability.
  * "dot com" is intentional: phone TTS pronounces it more clearly than ".com".
  */
-export function availabilityClosing(outcome: AvailabilityOutcome): string {
+export function availabilityClosing(
+  outcome: AvailabilityOutcome,
+  language: LanguageCode = 'en-IN',
+): string {
+  if (language === 'hi-IN') {
+    return outcome === 'yes'
+      ? 'धन्यवाद। गुल्लीनेस्ट टीम आपके लिए किरायेदार ढूँढना जारी रखेगी। जैसे ही हमें आपके लिए किरायेदार मिलेगा, हम आपको कॉल करेंगे। कृपया इस नंबर को गुल्लीनेस्ट प्रॉपर्टी टीम के नाम से सेव कर लें। आपका दिन शुभ हो।'
+      : 'जानकारी देने के लिए धन्यवाद। हम अपने रिकॉर्ड अपडेट कर देंगे और आपको दोबारा परेशान नहीं करेंगे। अगर भविष्य में आपको किरायेदार ढूँढना हो, तो गुल्लीनेस्ट डॉट कॉम पर जाएँ। आपका दिन शुभ हो।';
+  }
+
+  if (language === 'kn-IN') {
+    return outcome === 'yes'
+      ? 'ಧನ್ಯವಾದಗಳು. ಗುಲ್ಲಿನೆಸ್ಟ್ ತಂಡವು ನಿಮಗಾಗಿ ಬಾಡಿಗೆದಾರರನ್ನು ಹುಡುಕುವುದನ್ನು ಮುಂದುವರಿಸುತ್ತದೆ. ನಿಮಗಾಗಿ ಬಾಡಿಗೆದಾರರು ಸಿಕ್ಕ ತಕ್ಷಣ ನಾವು ನಿಮಗೆ ಕರೆ ಮಾಡುತ್ತೇವೆ. ದಯವಿಟ್ಟು ಈ ಸಂಖ್ಯೆಯನ್ನು ಗುಲ್ಲಿನೆಸ್ಟ್ ಪ್ರಾಪರ್ಟಿ ಟೀಮ್ ಎಂದು ಸೇವ್ ಮಾಡಿಕೊಳ್ಳಿ. ನಿಮ್ಮ ದಿನ ಶುಭವಾಗಿರಲಿ.'
+      : 'ಮಾಹಿತಿ ನೀಡಿದ್ದಕ್ಕೆ ಧನ್ಯವಾದಗಳು. ನಾವು ನಮ್ಮ ದಾಖಲೆಗಳನ್ನು ನವೀಕರಿಸುತ್ತೇವೆ ಮತ್ತು ನಿಮಗೆ ಮತ್ತೆ ತೊಂದರೆ ನೀಡುವುದಿಲ್ಲ. ಭವಿಷ್ಯದಲ್ಲಿ ಬಾಡಿಗೆದಾರರನ್ನು ಹುಡುಕಬೇಕಾದರೆ, ಗುಲ್ಲಿನೆಸ್ಟ್ ಡಾಟ್ ಕಾಮ್‌ಗೆ ಭೇಟಿ ನೀಡಿ. ನಿಮ್ಮ ದಿನ ಶುಭವಾಗಿರಲಿ.';
+  }
+
   if (outcome === 'yes') {
     return (
-      'Thank you. The Gullynest team will continue searching for tenants. ' +
-      'We will call you again in one week to confirm the property availability. ' +
-      'We recommend saving this number as Gullynest Property Team. ' +
+      'Thank you. The Galiynest team will continue searching for tenants. ' +
+      'We will call you as soon as we find a tenant for you. ' +
+      'We recommend saving this number as Galynest Property Team. ' +
       'Have a good day.'
     );
   }
 
   return (
     'Thank you for the information. We will update our records and will not disturb you again. ' +
-    'If you want to search for a tenant in the future, simply visit Gullynest dot com. ' +
+    'If you want to search for a tenant in the future, simply visit Galynest dot com. ' +
     'Have a good day.'
   );
 }
@@ -77,6 +97,9 @@ export interface CallLifecycle {
    * Safe to call on every turn; no-ops when language is unchanged.
    */
   setSpokenLanguage(language: LanguageCode, reason?: string): void;
+
+  /** Record owner yes/no/other before the scripted closing message plays. */
+  recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void;
 }
 
 export interface OpeningGreetingOptions {
@@ -84,8 +107,8 @@ export interface OpeningGreetingOptions {
   waitMs?: number;
   /** Fallback language when the owner stays silent (job preferred_language or en-IN). */
   preferredLanguage?: LanguageCode;
-  /** Build the spoken opening line for a detected/preferred language. */
-  buildText: (language: LanguageCode) => string;
+  /** LLM instructions for the opening turn (model generates spoken text). */
+  buildInstructions: (language: LanguageCode) => string;
 }
 
 export interface LiveKitCallSessionOptions {
@@ -94,6 +117,7 @@ export interface LiveKitCallSessionOptions {
   isOutboundCall: boolean;
   participantIdentity?: string;
   goodbyeText?: string;
+  callRecord?: CallSessionRecord;
   logger?: ReturnType<typeof log>;
 }
 
@@ -108,7 +132,8 @@ export class LiveKitCallSession implements CallLifecycle {
   private readonly isOutboundCall: boolean;
   private readonly participantIdentity?: string;
   private readonly pipeline: VoicePipelineBundle;
-
+  private readonly callRecord?: CallSessionRecord;
+  private persistStarted = false;
   private session?: voice.AgentSession;
   private hangupStarted = false;
   private hangupScheduled = false;
@@ -123,7 +148,7 @@ export class LiveKitCallSession implements CallLifecycle {
   /** Owner started speaking during opening; wait for final transcript to pick language. */
   private pendingOwnerLanguageGreeting = false;
   private skipNextTurnCommit = false;
-  private openingBuildText?: (language: LanguageCode) => string;
+  private openingBuildInstructions?: (language: LanguageCode) => string;
   private preferredOpeningLanguage: LanguageCode = 'en-IN';
   private readonly languageManager = new LanguageManager('en-IN');
   /** Last language pushed into Sarvam TTS (avoid redundant updateOptions). */
@@ -136,6 +161,7 @@ export class LiveKitCallSession implements CallLifecycle {
     this.isOutboundCall = options.isOutboundCall;
     this.participantIdentity = options.participantIdentity;
     this.pipeline = options.pipeline;
+    this.callRecord = options.callRecord;
     callDebug(
       `[CALL] session.ctor outbound=${this.isOutboundCall} identity=${this.participantIdentity ?? 'none'}`,
       this.logger,
@@ -192,7 +218,7 @@ export class LiveKitCallSession implements CallLifecycle {
         outputOptions: this.isOutboundCall
           ? { syncTranscription: false }
           : undefined,
-        record: { audio: true, traces: false, logs: false, transcript: false },
+        record: { audio: true, traces: false, logs: false, transcript: true },
       });
       callDebug('[CALL] session.start:done', this.logger);
     } catch (error) {
@@ -210,7 +236,7 @@ export class LiveKitCallSession implements CallLifecycle {
 
   /**
    * Layman: after the phone is connected, wait briefly for "Hello?".
-   * If the owner stays silent, introduce Gullynest and ask availability (no LLM wait).
+   * If the owner stays silent, introduce Galynest and ask availability (no LLM wait).
    */
   armOpeningGreeting(options: OpeningGreetingOptions): void {
     if (!this.isOutboundCall) return;
@@ -220,7 +246,7 @@ export class LiveKitCallSession implements CallLifecycle {
     this.openingArmed = true;
     this.openingGreeted = false;
     this.pendingOwnerLanguageGreeting = false;
-    this.openingBuildText = options.buildText;
+    this.openingBuildInstructions = options.buildInstructions;
     this.preferredOpeningLanguage = options.preferredLanguage ?? 'en-IN';
     this.languageManager.setLanguage(this.preferredOpeningLanguage);
     // Pre-tune TTS for the silent-path greeting language.
@@ -243,7 +269,7 @@ export class LiveKitCallSession implements CallLifecycle {
         return;
       }
       this.openingArmed = false;
-      this.speakOpeningGreeting(this.preferredOpeningLanguage, 'silence_timeout');
+      this.generateOpeningReply(this.preferredOpeningLanguage, 'silence_timeout');
     }, waitMs);
   }
 
@@ -267,33 +293,47 @@ export class LiveKitCallSession implements CallLifecycle {
       this.pipeline.tts,
       language,
       this.pipeline.ttsProvider,
+      this.pipeline.elevenLabsVoiceId,
     );
     this.appliedTtsLanguage = language;
+    this.callRecord?.transcriptBuilder.addLanguage(language);
     callDebug(
       `[CALL] session.language:switched from=${previous} to=${language} provider=${this.pipeline.ttsProvider} voice=${speaker} reason=${reason}`,
       this.logger,
     );
   }
 
-  /** Speak the fixed multilingual intro once (TTS already set to that language). */
-  private speakOpeningGreeting(language: LanguageCode, reason: string): void {
+  recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void {
+    this.callRecord?.recordOwnerOutcome(outcome, summary);
+    callDebug(
+      `[CALL] session.outcome:recorded outcome=${outcome} summary="${summary}"`,
+      this.logger,
+    );
+  }
+
+  /** Ask the LLM to generate the opening intro (no hardcoded spoken text). */
+  private generateOpeningReply(language: LanguageCode, reason: string): void {
     if (this.openingGreeted || this.hangupStarted) return;
     this.openingGreeted = true;
     this.setSpokenLanguage(language, `opening_${reason}`);
 
-    const text =
-      this.openingBuildText?.(language) ??
-      `Hello, this is Gullynest. Is the property still available for rent?`;
+    const instructions =
+      this.openingBuildInstructions?.(language) ??
+      `Introduce yourself briefly and ask if the property is still available for rent. Speak in ${language}.`;
 
     callDebug(
-      `[CALL] session.opening:speak reason=${reason} language=${language} text="${text}"`,
+      `[CALL] session.opening:generate_reply reason=${reason} language=${language}`,
       this.logger,
     );
 
     try {
-      this.requireSession().say(text, { allowInterruptions: true });
+      this.requireSession().generateReply({
+        instructions,
+        toolChoice: 'none',
+        allowInterruptions: true,
+      });
     } catch (error) {
-      callError(`[CALL] session.opening:say_fail error=${error}`, this.logger);
+      callError(`[CALL] session.opening:generate_fail error=${error}`, this.logger);
     }
   }
 
@@ -376,24 +416,35 @@ export class LiveKitCallSession implements CallLifecycle {
     });
 
     session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
+      if (ev.transcript.trim()) {
+        this.callRecord?.transcriptBuilder.addUserTranscript(ev.transcript, {
+          isFinal: ev.isFinal,
+          language: ev.language,
+          source: 'stt',
+        });
+      }
+
       if (!this.isOutboundCall || !ev.transcript.trim()) {
         return;
       }
 
       const previousLanguage = this.languageManager.getCurrentLanguage();
-      const fromStt = LanguageManager.normalizeLanguageCode(ev.language ?? undefined);
-      const fromText = this.languageManager.detectFromText(ev.transcript);
-      const language = fromStt ?? fromText.language;
+      const resolved = this.languageManager.resolveSpokenLanguage(
+        ev.transcript,
+        ev.language,
+      );
 
       callDebug(
-        `[CALL] session.language:detected language=${language} prev=${previousLanguage} sttLang=${ev.language ?? 'null'} final=${ev.isFinal} transcript="${ev.transcript}"`,
+        `[CALL] session.language:detected resolved=${resolved ?? 'keep'} prev=${previousLanguage} sttLang=${ev.language ?? 'null'} final=${ev.isFinal} transcript="${ev.transcript}"`,
         this.logger,
       );
 
-      // Retune TTS whenever the owner’s language is known / changes mid-call.
-      this.setSpokenLanguage(language, ev.isFinal ? 'stt_final' : 'stt_interim');
+      // Only retune TTS on final transcripts with a clear language switch.
+      if (ev.isFinal && resolved) {
+        this.setSpokenLanguage(resolved, 'stt_final');
+      }
 
-      // Opening window: cancel silence timer; on final transcript greet in their language.
+      // Opening window: cancel silence timer and let the LLM answer the owner's first turn.
       if ((this.openingArmed || this.pendingOwnerLanguageGreeting) && !this.openingGreeted) {
         if (this.openingArmed) {
           this.clearOpeningGreeting('owner_spoke');
@@ -401,10 +452,13 @@ export class LiveKitCallSession implements CallLifecycle {
         }
         if (ev.isFinal) {
           this.pendingOwnerLanguageGreeting = false;
-          this.skipNextTurnCommit = true;
-          this.speakOpeningGreeting(language, 'owner_spoke');
+          this.openingGreeted = true;
+          callDebug(
+            '[CALL] session.opening:owner_spoke_let_llm_reply',
+            this.logger,
+          );
         }
-        return;
+        // Fall through so the normal turn commit can trigger generateReply.
       }
 
       if (!ev.isFinal) {
@@ -474,22 +528,47 @@ export class LiveKitCallSession implements CallLifecycle {
     try {
       const language = this.languageManager.getCurrentLanguage();
       this.setSpokenLanguage(language, 'goodbye');
-      const goodbyeText =
-        this.goodbyeText !== DEFAULT_GOODBYE_TEXT
-          ? this.goodbyeText
-          : this.availabilityOutcome
-            ? availabilityClosing(this.availabilityOutcome)
-            : goodbyeForLanguage(language);
       const ttsSpeed = getSettings().ttsSpeed;
-      // Slower speech needs more SIP flush time after waitForPlayout returns.
       const sipDrainMs = Math.round(
         GOODBYE_SIP_DRAIN_GRACE_MS / Math.min(1, Math.max(0.5, ttsSpeed)),
       );
+
+      let speech;
+      if (this.goodbyeText !== DEFAULT_GOODBYE_TEXT) {
+        callDebug(
+          `[CALL] session.goodbye:say_custom language=${language} text="${this.goodbyeText}"`,
+          this.logger,
+        );
+        this.callRecord?.transcriptBuilder.addAssistantText(this.goodbyeText, 'closing');
+        speech = session.say(this.goodbyeText, { allowInterruptions: false });
+      } else if (this.availabilityOutcome) {
+        const instructions = buildClosingInstructions(
+          this.availabilityOutcome,
+          language,
+        );
+        callDebug(
+          `[CALL] session.goodbye:generate_reply language=${language} outcome=${this.availabilityOutcome}`,
+          this.logger,
+        );
+        speech = session.generateReply({
+          instructions,
+          toolChoice: 'none',
+          allowInterruptions: false,
+        });
+      } else {
+        const goodbyeText = goodbyeForLanguage(language);
+        callDebug(
+          `[CALL] session.goodbye:say_fallback language=${language} text="${goodbyeText}"`,
+          this.logger,
+        );
+        this.callRecord?.transcriptBuilder.addAssistantText(goodbyeText, 'closing');
+        speech = session.say(goodbyeText, { allowInterruptions: false });
+      }
+
       callDebug(
-        `[CALL] session.goodbye:play_start language=${language} speed=${ttsSpeed} drainMs=${sipDrainMs} text="${goodbyeText}"`,
+        `[CALL] session.goodbye:play_start language=${language} speed=${ttsSpeed} drainMs=${sipDrainMs}`,
         this.logger,
       );
-      const speech = session.say(goodbyeText, { allowInterruptions: false });
       goodbyeTimedOut = await raceWithTimeout(
         speech.waitForPlayout(),
         GOODBYE_PLAYOUT_TIMEOUT_MS,
@@ -570,8 +649,9 @@ export class LiveKitCallSession implements CallLifecycle {
 
     try {
       const session = this.session;
+      let report: ReturnType<JobContext['makeSessionReport']> | undefined;
       if (session) {
-        const report = this.ctx.makeSessionReport(session);
+        report = this.ctx.makeSessionReport(session);
         if (report.audioRecordingPath) {
           callDebug(
             `[CALL] session.finalizeHangup:recording path=${report.audioRecordingPath}`,
@@ -579,6 +659,7 @@ export class LiveKitCallSession implements CallLifecycle {
           );
         }
       }
+      await this.persistCallLog(report);
     } catch (error) {
       callWarn(`[CALL] session.finalizeHangup:report_fail error=${error}`, this.logger);
     }
@@ -589,6 +670,29 @@ export class LiveKitCallSession implements CallLifecycle {
 
     callDebug('[CALL] session.finalizeHangup:resolved', this.logger);
     this.resolveClose?.();
+  }
+
+  private async persistCallLog(
+    report?: ReturnType<JobContext['makeSessionReport']>,
+  ): Promise<void> {
+    if (this.persistStarted || !this.callRecord) {
+      return;
+    }
+    this.persistStarted = true;
+
+    const snapshot = this.callRecord.finalize(report ?? null);
+    callDebug(
+      `[CALL] session.persist:start job=${snapshot.jobId} outcome=${snapshot.ownerOutcome} success=${snapshot.success} languages=${snapshot.languages.join(',')}`,
+      this.logger,
+    );
+
+    await safeCompleteCallLog(snapshot);
+    try {
+      await saveCallResultSnapshot(snapshot);
+      callDebug(`[CALL] session.persist:file_saved job=${snapshot.jobId}`, this.logger);
+    } catch (error) {
+      callWarn(`[CALL] session.persist:file_fail job=${snapshot.jobId} error=${error}`, this.logger);
+    }
   }
 
   private requireSession(): voice.AgentSession {

@@ -8,15 +8,22 @@ describe('availability closing messages', () => {
   it('explains follow-up and number saving after a yes', () => {
     const text = availabilityClosing('yes');
     expect(text).toContain('continue searching for tenants');
-    expect(text).toContain('again in one week');
-    expect(text).toContain('saving this number as Gullynest Property Team');
+    expect(text).toContain('as soon as we find a tenant for you');
+    expect(text).toContain('saving this number as Galynest Property Team');
   });
 
   it('explains record update and future website option after a no', () => {
     const text = availabilityClosing('no');
     expect(text).toContain('update our records');
     expect(text).toContain('will not disturb you again');
-    expect(text).toContain('Gullynest dot com');
+    expect(text).toContain('Galynest dot com');
+  });
+
+  it('uses the last spoken language for the closing', () => {
+    expect(availabilityClosing('yes', 'hi-IN')).toContain('किरायेदार');
+    expect(availabilityClosing('yes', 'kn-IN')).toContain('ಬಾಡಿಗೆದಾರ');
+    expect(availabilityClosing('no', 'hi-IN')).toContain('रिकॉर्ड अपडेट');
+    expect(availabilityClosing('no', 'kn-IN')).toContain('ದಾಖಲೆಗಳನ್ನು ನವೀಕರಿಸುತ್ತೇವೆ');
   });
 });
 
@@ -158,28 +165,50 @@ describe('SarvamVoicePipeline', () => {
   });
 });
 
+describe('opening / closing LLM instructions', () => {
+  it('asks the model to speak the opening in the target language', async () => {
+    const { buildOpeningInstructions, buildClosingInstructions } = await import(
+      '../src/agents/property-availability/prompts.js'
+    );
+    const params = {
+      companyName: 'Galinest',
+      callerName: 'Aditi',
+      ownerName: 'Devansh',
+      propertyAddress: '42, Indiranagar',
+    };
+
+    expect(buildOpeningInstructions(params, 'hi-IN')).toContain('Hindi');
+    expect(buildOpeningInstructions(params, 'hi-IN')).toContain('Aditi');
+    expect(buildClosingInstructions('yes', 'kn-IN')).toContain('Kannada');
+    expect(buildClosingInstructions('yes', 'kn-IN')).toContain(
+      'as soon as we find a tenant',
+    );
+    expect(buildClosingInstructions('no', 'en-IN')).toContain('Galinest dot com');
+  });
+});
+
 describe('opening greeting helper', () => {
   it('builds English / Hindi / Kannada intros', async () => {
     const { buildOpeningGreeting } = await import(
       '../src/agents/property-availability/prompts.js'
     );
     const params = {
-      companyName: 'Gullynest',
-      callerName: 'Jitesh',
+      companyName: 'Galynest',
+      callerName: 'Aditi',
       ownerName: 'Devansh',
       propertyAddress: '42, Indiranagar',
     };
     const en = buildOpeningGreeting(params, 'en-IN');
     const hi = buildOpeningGreeting(params, 'hi-IN');
     const kn = buildOpeningGreeting(params, 'kn-IN');
-    expect(en).toContain('Jitesh from Gullynest');
-    expect(en).toContain('Gullynest');
+    expect(en).toContain('Aditi from Galynest');
+    expect(en).toContain('Galynest');
     expect(en).toContain('still available');
     expect(hi).toContain('नमस्ते');
-    expect(hi).toContain('Gullynest');
-    expect(hi).toContain('Jitesh');
+    expect(hi).toContain('Galynest');
+    expect(hi).toContain('Aditi');
     expect(kn).toContain('ನಮಸ್ಕಾರ');
-    expect(kn).toContain('Gullynest');
-    expect(kn).toContain('Jitesh');
+    expect(kn).toContain('Galynest');
+    expect(kn).toContain('Aditi');
   });
 });

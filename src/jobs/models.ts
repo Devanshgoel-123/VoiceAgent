@@ -1,3 +1,6 @@
+import { getSettings } from '../config/settings.js';
+import type { OwnerOutcome, TranscriptEntry } from './call-log-types.js';
+
 export type CallJobStatus =
   | 'pending'
   | 'dispatched'
@@ -37,8 +40,16 @@ export interface CallResult {
   jobId: string;
   status: CallJobStatus;
   propertyStillAvailable: YesNoAnswer;
-  gullynestShouldFindTenants: YesNoAnswer;
+  GalynestShouldFindTenants: YesNoAnswer;
+  /** Primary language detected during the call. */
   conversationLanguage?: string;
+  /** All languages used during the call (owner + detected switches). */
+  languagesUsed?: string[];
+  /** yes / no / unclear / other / not_asked */
+  ownerOutcome?: OwnerOutcome;
+  success?: boolean;
+  answered?: boolean;
+  transcript?: TranscriptEntry[];
   transcriptSummary?: string;
   rawMetadata?: Record<string, unknown>;
   completedAt?: string;
@@ -60,8 +71,8 @@ export function createPropertyAvailabilityJob(
     jobId: input.jobId ?? crypto.randomUUID(),
     owner: input.owner,
     property: input.property,
-    companyName: input.companyName ?? 'Gullynest',
-    callerName: input.callerName ?? 'Jitesh',
+    companyName: input.companyName ?? 'Galynest',
+    callerName: input.callerName ?? getSettings().callerName,
     preferredLanguage: input.preferredLanguage,
     scheduledAt: input.scheduledAt,
     metadata: input.metadata ?? {},

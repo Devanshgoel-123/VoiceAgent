@@ -36,6 +36,8 @@ export interface Settings {
   companyName: string;
   /** Human name used when the voice agent introduces itself. */
   callerName: string;
+  /** Postgres connection string for Drizzle call logs. Optional for local file-only mode. */
+  databaseUrl?: string;
   sttModel: string;
   llmModel: string;
   ttsModel: string;
@@ -127,8 +129,9 @@ export function getSettings(): Settings {
     agentName: process.env.AGENT_NAME ?? 'gully-property-availability-agent',
     apiHost: process.env.API_HOST ?? '0.0.0.0',
     apiPort: Number(process.env.API_PORT ?? '8080'),
-    companyName: process.env.COMPANY_NAME ?? 'Gullynest',
-    callerName: process.env.CALLER_NAME ?? 'Jitesh',
+    companyName: process.env.COMPANY_NAME ?? 'Galynest',
+    callerName: process.env.CALLER_NAME?.trim() || 'Aditi',
+    databaseUrl: process.env.DATABASE_URL?.trim() || undefined,
     sttModel: 'saaras:v3',
     llmModel: 'sarvam-105b',
     ttsModel: 'bulbul:v3',
