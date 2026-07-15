@@ -47,11 +47,7 @@ export function createWorkerConfig(
       const logger = log().child({ room: ctx.room.name });
       const metadata = parseMetadata(ctx.job.metadata);
 
-      callInfo(
-        `[CALL] worker.entry:start job=${metadata.job_id ?? ctx.job.id} appEnv=${settings.appEnv} callDebug=${settings.callDebugLogging}`,
-        logger,
-      );
-      callDebug('[CALL] worker.entry:debug_tracing_enabled', logger);
+      callInfo(`call: start job=${metadata.job_id ?? ctx.job.id}`, logger);
 
       const isLocalTest = ctx.isFakeJob;
       const effectiveMetadata =
@@ -144,13 +140,12 @@ export function createWorkerConfig(
           callRecord.markAnswered();
           await safeMarkCallAnswered(callRecord.jobId);
 
-          // Max 2.5s silence after connect → introduce Galynest (in preferred/detected language).
           const openingParams = {
             companyName:
               (effectiveMetadata.company_name as string) ?? settings.companyName,
             callerName:
               (effectiveMetadata.caller_name as string) ?? settings.callerName,
-            ownerName: (effectiveMetadata.owner_name as string) ?? 'Sir/Madam',
+            ownerName: (effectiveMetadata.owner_name as string) ?? 'Owner',
             propertyAddress:
               (effectiveMetadata.property_address as string) ?? 'your property',
           };

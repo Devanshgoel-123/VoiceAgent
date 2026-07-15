@@ -25,6 +25,11 @@ export class CallJobDispatcher {
       this.settings.livekitApiSecret,
     );
 
+    // Visible so it's obvious which caller/company name got baked into the call.
+    console.log(
+      `[CALL] dispatch job=${job.jobId} caller=${job.callerName} company=${job.companyName} room=${room}`,
+    );
+
     const dispatch = await dispatchClient.createDispatch(room, this.settings.agentName, {
       metadata: JSON.stringify(metadata),
     });
