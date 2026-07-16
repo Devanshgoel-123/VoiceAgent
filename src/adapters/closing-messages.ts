@@ -3,7 +3,43 @@ import type { LanguageCode } from '../core/language-manager.js';
 export const DEFAULT_GOODBYE_TEXT = 'Thank you. Goodbye.';
 export type AvailabilityOutcome = 'yes' | 'no';
 
-/** Scripted closing when the LLM fails to speak its own closing in time. */
+export interface OpeningScriptParams {
+  callerName: string;
+  companyName: string;
+  propertyAddress: string;
+}
+
+/** Scripted opening — TTS only, no LLM. */
+export function openingForLanguage(
+  params: OpeningScriptParams,
+  language: LanguageCode = 'en-IN',
+): string {
+  const { callerName, companyName, propertyAddress } = params;
+
+  if (language === 'hi-IN') {
+    return (
+      `नमस्ते, मैं ${callerName} बोल रहा हूँ ${companyName} से। ` +
+      `मैं ${propertyAddress} वाली प्रॉपर्टी के बारे में कॉल कर रहा हूँ। ` +
+      `क्या यह किराये के लिए अभी भी उपलब्ध है?`
+    );
+  }
+
+  if (language === 'kn-IN') {
+    return (
+      `ನಮಸ್ಕಾರ, ನಾನು ${callerName}, ${companyName} ನಿಂದ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ. ` +
+      `ನಾನು ${propertyAddress} ನಲ್ಲಿರುವ ಪ್ರಾಪರ್ಟಿ ಬಗ್ಗೆ ಕರೆ ಮಾಡುತ್ತಿದ್ದೇನೆ. ` +
+      `ಇದು ಇನ್ನೂ ಬಾಡಿಗೆಗೆ ಲಭ್ಯವಿದೆಯೇ?`
+    );
+  }
+
+  return (
+    `Hi, this is ${callerName} from ${companyName}. ` +
+    `I'm calling about the property at ${propertyAddress}. ` +
+    `Is it still available for rent?`
+  );
+}
+
+/** Scripted closing after availability is recorded — no post-tool LLM turn. */
 export function availabilityClosing(
   outcome: AvailabilityOutcome,
   language: LanguageCode = 'en-IN',

@@ -1,9 +1,9 @@
 import { AutoSubscribe, type JobContext, log, voice } from '@livekit/agents';
+import { openingForLanguage } from '../adapters/closing-messages.js';
 import { LiveKitCallSession } from '../adapters/livekit-call-session.js';
 import { LiveKitSipAdapter } from '../adapters/livekit-sip-adapter.js';
 import { SarvamVoicePipeline } from '../adapters/sarvam-voice-pipeline.js';
 import type { VoicePipelineProvider } from '../adapters/voice-pipeline.js';
-import { buildOpeningInstructions } from '../agents/property-availability/prompts.js';
 import { OWNER_OPENING_WAIT_MS } from '../config/call-config.js';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
@@ -113,8 +113,8 @@ export function createWorkerConfig(
               LanguageManager.normalizeLanguageCode(
                 effectiveMetadata.preferred_language as string | undefined,
               ) ?? 'en-IN',
-            buildInstructions: (language) =>
-              buildOpeningInstructions(
+            buildOpeningText: (language) =>
+              openingForLanguage(
                 {
                   companyName:
                     (effectiveMetadata.company_name as string) ?? settings.companyName,

@@ -2,7 +2,8 @@
 
 export const GOODBYE_PLAYOUT_TIMEOUT_MS = 20_000;
 export const GOODBYE_SIP_DRAIN_GRACE_MS = 3_000;
-export const HANGUP_DEFER_MS = 800;
+/** Leave the tool stack before we interrupt and play the scripted closing. */
+export const HANGUP_DEFER_MS = 200;
 export const CLOSE_FALLBACK_TIMEOUT_MS = 1500;
 export const OWNER_OPENING_WAIT_MS = 1000;
 export const OUTBOUND_ENDPOINTING_MIN_MS = 250;
