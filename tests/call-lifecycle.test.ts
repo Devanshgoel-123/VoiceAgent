@@ -165,25 +165,22 @@ describe('SarvamVoicePipeline', () => {
   });
 });
 
-describe('opening / closing LLM instructions', () => {
-  it('asks the model to speak the opening in the target language', async () => {
-    const { buildOpeningInstructions, buildClosingInstructions } = await import(
-      '../src/agents/property-availability/prompts.js'
+describe('scripted opening messages', () => {
+  it('builds openings in the target language without using the owner name', async () => {
+    const { openingForLanguage } = await import(
+      '../src/adapters/closing-messages.js'
     );
     const params = {
       companyName: 'Galinest',
-      callerName: 'Aditi',
+      callerName: 'Jitesh',
       propertyAddress: '42, Indiranagar',
     };
 
-    expect(buildOpeningInstructions(params, 'hi-IN')).toContain('Hindi');
-    expect(buildOpeningInstructions(params, 'hi-IN')).toContain('Aditi');
-    expect(buildOpeningInstructions(params, 'hi-IN')).not.toContain('Devansh');
-    expect(buildOpeningInstructions(params, 'en-IN')).toContain('Do NOT use or invent the owner\'s name');
-    expect(buildClosingInstructions('yes', 'kn-IN')).toContain('Kannada');
-    expect(buildClosingInstructions('yes', 'kn-IN')).toContain(
-      'as soon as we find a tenant',
-    );
-    expect(buildClosingInstructions('no', 'en-IN')).toContain('Galinest dot com');
+    expect(openingForLanguage(params, 'en-IN')).toContain('Jitesh');
+    expect(openingForLanguage(params, 'en-IN')).toContain('Galinest');
+    expect(openingForLanguage(params, 'en-IN')).toContain('available for rent');
+    expect(openingForLanguage(params, 'en-IN')).not.toContain('Devansh');
+    expect(openingForLanguage(params, 'hi-IN')).toContain('किराये');
+    expect(openingForLanguage(params, 'kn-IN')).toContain('ಬಾಡಿಗೆ');
   });
 });

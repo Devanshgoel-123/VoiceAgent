@@ -27,7 +27,12 @@ import { applySpokenLanguage } from './spoken-language.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
 export type { AvailabilityOutcome };
-export { availabilityClosing, goodbyeForLanguage } from './closing-messages.js';
+export {
+  availabilityClosing,
+  goodbyeForLanguage,
+  openingForLanguage,
+} from './closing-messages.js';
+export type { OpeningScriptParams } from './closing-messages.js';
 export { OWNER_OPENING_WAIT_MS } from '../config/call-config.js';
 
 export interface CallLifecycle {
@@ -40,7 +45,8 @@ export interface CallLifecycle {
 export interface OpeningGreetingOptions {
   waitMs?: number;
   preferredLanguage?: LanguageCode;
-  buildInstructions: (language: LanguageCode) => string;
+  /** Scripted opening text for the given language (TTS only — no LLM). */
+  buildOpeningText: (language: LanguageCode) => string;
 }
 
 export interface LiveKitCallSessionOptions {
@@ -76,12 +82,9 @@ export class LiveKitCallSession implements CallLifecycle {
   private openingArmed = false;
   private openingGreeted = false;
   private pendingOwnerLanguageGreeting = false;
-  private openingBuildInstructions?: (language: LanguageCode) => string;
+  private openingBuildText?: (language: LanguageCode) => string;
   private preferredOpeningLanguage: LanguageCode = 'en-IN';
   private appliedTtsLanguage: LanguageCode | null = null;
-  private agentState: voice.AgentState = 'initializing';
-  private hangupScheduledAt = 0;
-  private lastAgentSpeechEndedAt = 0;
 
   constructor(options: LiveKitCallSessionOptions) {
     this.ctx = options.jobContext;
@@ -147,7 +150,7 @@ export class LiveKitCallSession implements CallLifecycle {
     this.openingArmed = true;
     this.openingGreeted = false;
     this.pendingOwnerLanguageGreeting = false;
-    this.openingBuildInstructions = options.buildInstructions;
+    this.openingBuildText = options.buildOpeningText;
     this.preferredOpeningLanguage = options.preferredLanguage ?? 'en-IN';
     this.languageManager.setLanguage(this.preferredOpeningLanguage);
     this.setSpokenLanguage(this.preferredOpeningLanguage, 'opening_armed');
@@ -163,7 +166,7 @@ export class LiveKitCallSession implements CallLifecycle {
         return;
       }
       this.openingArmed = false;
-      this.generateOpeningReply(this.preferredOpeningLanguage);
+      this.speakOpening(this.preferredOpeningLanguage);
     }, waitMs);
   }
 
@@ -201,7 +204,6 @@ export class LiveKitCallSession implements CallLifecycle {
     if (this.hangupStarted || this.hangupScheduled) return;
     this.availabilityOutcome = outcome;
     this.hangupScheduled = true;
-    this.hangupScheduledAt = Date.now();
     this.clearOpeningGreeting();
     callInfo(`hangup: scheduled outcome=${outcome ?? 'none'}`, this.logger);
     setTimeout(() => void this.playGoodbyeAndHangup(), HANGUP_DEFER_MS);
@@ -211,24 +213,54 @@ export class LiveKitCallSession implements CallLifecycle {
     return this.closePromise ?? Promise.resolve();
   }
 
-  private generateOpeningReply(language: LanguageCode): void {
+  /** Scripted opening via TTS — no LLM round-trip. */
+  private speakOpening(language: LanguageCode): void {
     if (this.openingGreeted || this.hangupStarted) return;
     this.openingGreeted = true;
     this.setSpokenLanguage(language, 'opening');
 
-    const instructions =
-      this.openingBuildInstructions?.(language) ??
-      `Introduce yourself briefly and ask if the property is still available. Speak in ${language}.`;
+    const text =
+      this.openingBuildText?.(language) ??
+      `Hi, I'm calling about a property. Is it still available for rent?`;
+
+    callInfo(`opening: say language=${language}`, this.logger);
+    this.callRecord?.transcriptBuilder.addAssistantText(text, 'opening');
 
     try {
-      this.requireSession().generateReply({
-        instructions,
-        toolChoice: 'none',
+      this.requireSession().say(text, {
         allowInterruptions: !this.isOutboundCall,
       });
     } catch (error) {
-      callError(`opening generateReply failed: ${error}`, this.logger);
+      callError(`opening say failed: ${error}`, this.logger);
     }
+  }
+
+  /**
+   * Clear yes/no without LLM: record outcome and hang up with scripted closing.
+   * Returns true when handled (caller must skip commitUserTurn).
+   */
+  private tryFastAvailabilityAnswer(transcript: string): boolean {
+    if (!this.openingGreeted || this.hangupScheduled || this.hangupStarted) {
+      return false;
+    }
+
+    const intent = this.languageManager.detectFromText(transcript);
+    if (intent.isAffirmative === true) {
+      callInfo(`fast-path: yes heard="${truncateForLog(transcript)}"`, this.logger);
+      this.recordOwnerOutcome('yes', `Owner confirmed availability (${transcript}).`);
+      this.scheduleHangup('yes');
+      return true;
+    }
+    if (intent.isNegative === true) {
+      callInfo(`fast-path: no heard="${truncateForLog(transcript)}"`, this.logger);
+      this.recordOwnerOutcome(
+        'no',
+        `Owner confirmed not available (${transcript}).`,
+      );
+      this.scheduleHangup('no');
+      return true;
+    }
+    return false;
   }
 
   private clearOpeningGreeting(): void {
@@ -252,10 +284,6 @@ export class LiveKitCallSession implements CallLifecycle {
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
       agentState = ev.newState;
-      this.agentState = ev.newState;
-      if (ev.oldState === 'speaking' && ev.newState !== 'speaking') {
-        this.lastAgentSpeechEndedAt = Date.now();
-      }
       callInfo(`agent: ${ev.oldState} → ${ev.newState}`, this.logger);
       if (ev.newState === 'thinking' || ev.newState === 'speaking') {
         clearTurnCommitTimer();
@@ -314,23 +342,38 @@ export class LiveKitCallSession implements CallLifecycle {
         }
       }
 
+      if (!ev.isFinal) return;
+
+      // Opening window: owner spoke first → scripted intro in their language (no LLM).
       if ((this.openingArmed || this.pendingOwnerLanguageGreeting) && !this.openingGreeted) {
         if (this.openingArmed) {
           this.clearOpeningGreeting();
           this.pendingOwnerLanguageGreeting = true;
         }
-        if (ev.isFinal) {
-          this.pendingOwnerLanguageGreeting = false;
-          this.openingGreeted = true;
-        }
+        this.pendingOwnerLanguageGreeting = false;
+        const openLang =
+          this.languageManager.getCurrentLanguage() === 'unknown'
+            ? this.preferredOpeningLanguage
+            : this.languageManager.getCurrentLanguage();
+        this.speakOpening(openLang);
+        return;
       }
 
-      if (!ev.isFinal) return;
+      // Clear yes/no → skip LLM entirely.
+      if (this.tryFastAvailabilityAnswer(ev.transcript)) {
+        return;
+      }
 
+      // Unclear / other speech → minimum LLM brain.
       clearTurnCommitTimer();
       turnCommitTimer = setTimeout(() => {
         turnCommitTimer = undefined;
-        if (agentState !== 'thinking' && agentState !== 'speaking') {
+        if (
+          !this.hangupScheduled &&
+          !this.hangupStarted &&
+          agentState !== 'thinking' &&
+          agentState !== 'speaking'
+        ) {
           session.commitUserTurn();
         }
       }, TURN_COMMIT_FALLBACK_MS);
@@ -346,60 +389,51 @@ export class LiveKitCallSession implements CallLifecycle {
     });
   }
 
+  /**
+   * Play a scripted closing in the owner's last language (no post-tool LLM turn),
+   * then shut down and delete the room.
+   */
   private async playGoodbyeAndHangup(): Promise<void> {
     if (this.hangupStarted) return;
     this.hangupStarted = true;
     this.clearOpeningGreeting();
 
     const session = this.requireSession();
-    const language = this.languageManager.getCurrentLanguage();
+    const language =
+      this.languageManager.getCurrentLanguage() === 'unknown'
+        ? 'en-IN'
+        : this.languageManager.getCurrentLanguage();
     this.setSpokenLanguage(language, 'goodbye');
     const ttsSpeed = getSettings().ttsSpeed;
     const sipDrainMs = Math.round(
       GOODBYE_SIP_DRAIN_GRACE_MS / Math.min(1, Math.max(0.5, ttsSpeed)),
     );
 
+    // Cancel any post-tool LLM reply so it cannot speak after / over the closing.
+    try {
+      session.interrupt({ force: true });
+    } catch {
+      /* ignore */
+    }
+    await sleep(100);
+
     let goodbyeTimedOut = false;
 
     try {
-      if (this.availabilityOutcome) {
-        const closingAlreadyFinished =
-          this.lastAgentSpeechEndedAt >= this.hangupScheduledAt;
-        const closingStarted =
-          closingAlreadyFinished ||
-          this.agentState === 'speaking' ||
-          (await this.waitForAgentState('speaking', 15_000));
+      const goodbyeText = this.availabilityOutcome
+        ? availabilityClosing(this.availabilityOutcome, language)
+        : goodbyeForLanguage(language);
 
-        if (closingStarted) {
-          const closingFinished =
-            closingAlreadyFinished ||
-            (await this.waitForAgentState('listening', GOODBYE_PLAYOUT_TIMEOUT_MS));
-          goodbyeTimedOut = !closingFinished;
-        } else {
-          callWarn('closing: model never spoke — playing fallback', this.logger);
-          try {
-            session.interrupt({ force: true });
-          } catch {
-            /* ignore */
-          }
-          await sleep(200);
-          const fallback = availabilityClosing(this.availabilityOutcome, language);
-          this.callRecord?.transcriptBuilder.addAssistantText(fallback, 'closing');
-          const speech = session.say(fallback, { allowInterruptions: false });
-          goodbyeTimedOut = await raceWithTimeout(
-            speech.waitForPlayout(),
-            GOODBYE_PLAYOUT_TIMEOUT_MS,
-          );
-        }
-      } else {
-        const goodbyeText = goodbyeForLanguage(language);
-        this.callRecord?.transcriptBuilder.addAssistantText(goodbyeText, 'closing');
-        const speech = session.say(goodbyeText, { allowInterruptions: false });
-        goodbyeTimedOut = await raceWithTimeout(
-          speech.waitForPlayout(),
-          GOODBYE_PLAYOUT_TIMEOUT_MS,
-        );
-      }
+      callInfo(
+        `closing: say language=${language} outcome=${this.availabilityOutcome ?? 'none'}`,
+        this.logger,
+      );
+      this.callRecord?.transcriptBuilder.addAssistantText(goodbyeText, 'closing');
+      const speech = session.say(goodbyeText, { allowInterruptions: false });
+      goodbyeTimedOut = await raceWithTimeout(
+        speech.waitForPlayout(),
+        GOODBYE_PLAYOUT_TIMEOUT_MS,
+      );
 
       if (!goodbyeTimedOut) await sleep(sipDrainMs);
     } catch (error) {
@@ -422,40 +456,6 @@ export class LiveKitCallSession implements CallLifecycle {
       if (this.closeResolved && this.roomDeleted) return;
       void this.finalizeHangup('close_fallback_timeout');
     }, CLOSE_FALLBACK_TIMEOUT_MS);
-  }
-
-  private waitForAgentState(
-    target: voice.AgentState,
-    timeoutMs: number,
-  ): Promise<boolean> {
-    if (this.agentState === target) return Promise.resolve(true);
-
-    return new Promise((resolve) => {
-      const session = this.session;
-      if (!session) {
-        resolve(false);
-        return;
-      }
-
-      const timer = setTimeout(() => {
-        cleanup();
-        resolve(false);
-      }, timeoutMs);
-
-      const onStateChanged = (ev: { newState: voice.AgentState }) => {
-        if (ev.newState === target) {
-          cleanup();
-          resolve(true);
-        }
-      };
-
-      const cleanup = () => {
-        clearTimeout(timer);
-        session.off(voice.AgentSessionEventTypes.AgentStateChanged, onStateChanged);
-      };
-
-      session.on(voice.AgentSessionEventTypes.AgentStateChanged, onStateChanged);
-    });
   }
 
   private async finalizeHangup(reason: string): Promise<void> {

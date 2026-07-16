@@ -1,15 +1,13 @@
 import { llm, voice } from '@livekit/agents';
 import { z } from 'zod';
 import type { CallLifecycle } from '../../adapters/livekit-call-session.js';
+import { openingForLanguage } from '../../adapters/closing-messages.js';
 import { getSettings } from '../../config/settings.js';
 import { callError } from '../../core/call-logger.js';
 import type { CallMetadata } from '../../core/types.js';
 import type { YesNoAnswer } from '../../jobs/models.js';
 import { registerAgent } from '../registry.js';
-import {
-  buildClosingInstructions,
-  buildPropertyAvailabilityInstructions,
-} from './prompts.js';
+import { buildPropertyAvailabilityInstructions } from './prompts.js';
 
 interface PropertyWorkflowState {
   jobId: string;
@@ -55,11 +53,15 @@ class PropertyAvailabilityAgent extends voice.Agent {
   async onEnter(): Promise<void> {
     if (this.state.callMetadata.phone_number) return;
 
-    this.session.generateReply({
-      instructions:
-        `Say Hi, introduce yourself as ${(this.state.callMetadata.caller_name as string) ?? getSettings().callerName} from ${this.state.companyName}, ` +
-        'and ask if the property is still available for rent. Do not use the owner\'s name.',
+    const settings = getSettings();
+    const text = openingForLanguage({
+      callerName:
+        (this.state.callMetadata.caller_name as string) ?? settings.callerName,
+      companyName: this.state.companyName,
+      propertyAddress:
+        (this.state.callMetadata.property_address as string) ?? 'your property',
     });
+    this.session.say(text, { allowInterruptions: true });
   }
 }
 
@@ -85,7 +87,7 @@ function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: CallLifecy
   return {
     recordPropertyAvailability: llm.tool({
       description:
-        'Record yes/no on property availability. After this tool, speak the closing from the tool result, then stop.',
+        'Record yes/no on property availability. After this tool, do not speak — the system plays a scripted closing and hangs up.',
       parameters: z.object({
         isAvailable: z.boolean(),
         ownerResponse: z.string(),
@@ -93,19 +95,14 @@ function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: CallLifecy
       execute: async ({ isAvailable, ownerResponse }) => {
         recordAvailabilityOutcome(state, lifecycle, isAvailable, ownerResponse);
 
-        const language = lifecycle?.getCurrentLanguage() ?? 'en-IN';
-        const closingBrief = buildClosingInstructions(
-          isAvailable ? 'yes' : 'no',
-          language === 'unknown' ? 'en-IN' : language,
-        );
-
         if (!lifecycle) {
           callError('recordPropertyAvailability: no lifecycle — hangup will not run');
-          return closingBrief;
+          return 'Recorded. Do not speak.';
         }
 
         lifecycle.scheduleHangup(isAvailable ? 'yes' : 'no');
-        return closingBrief;
+        // Non-empty: Sarvam rejects empty tool content. Instruct model not to generate a closing.
+        return 'Recorded. Do not speak — the system will play the closing message.';
       },
     }),
 
