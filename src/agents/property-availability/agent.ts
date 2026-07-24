@@ -12,9 +12,11 @@ import { buildPropertyAvailabilityInstructions } from './prompts.js';
 interface PropertyWorkflowState {
   jobId: string;
   companyName: string;
+  companyWebsite: string;
   callMetadata: CallMetadata;
   propertyAvailable: YesNoAnswer;
   outcomeRecorded: boolean;
+  doNotCallRecorded: boolean;
 }
 
 function createWorkflowState(metadata: CallMetadata): PropertyWorkflowState {
@@ -22,9 +24,12 @@ function createWorkflowState(metadata: CallMetadata): PropertyWorkflowState {
   return {
     jobId: (metadata.job_id as string) ?? 'unknown',
     companyName: (metadata.company_name as string) ?? settings.companyName,
+    companyWebsite:
+      (metadata.company_website as string) ?? settings.companyWebsite,
     callMetadata: metadata,
     propertyAvailable: 'not_asked',
     outcomeRecorded: false,
+    doNotCallRecorded: false,
   };
 }
 
@@ -38,6 +43,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
     super({
       instructions: buildPropertyAvailabilityInstructions({
         companyName: state.companyName,
+        companyWebsite: state.companyWebsite,
         callerName: (metadata.caller_name as string) ?? settings.callerName,
         propertyAddress: (metadata.property_address as string) ?? 'your property',
         propertyType: metadata.property_type as string | undefined,
@@ -59,6 +65,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
       callerName:
         (this.state.callMetadata.caller_name as string) ?? settings.callerName,
       companyName: this.state.companyName,
+      companyWebsite: this.state.companyWebsite,
       propertyAddress:
         (this.state.callMetadata.property_address as string) ?? 'your property',
     });
@@ -102,8 +109,29 @@ export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: Cal
         }
 
         lifecycle.scheduleHangup(isAvailable ? 'yes' : 'no');
-        // Non-empty: Sarvam rejects empty tool content. Instruct model not to generate a closing.
         return 'Recorded. Do not speak — the system will play the closing message.';
+      },
+    }),
+
+    recordDoNotCall: llm.tool({
+      description:
+        'Record that the owner explicitly asked not to be called again. After this tool, do not speak — the system plays a closing and hangs up.',
+      parameters: z.object({
+        ownerRequest: z.string(),
+      }),
+      execute: async ({ ownerRequest }) => {
+        if (!state.doNotCallRecorded) {
+          state.doNotCallRecorded = true;
+          lifecycle?.recordDoNotCall(ownerRequest);
+        }
+
+        if (!lifecycle) {
+          callError('recordDoNotCall: no lifecycle — hangup will not run');
+          return 'Opt-out recorded. Do not speak.';
+        }
+
+        lifecycle.scheduleHangup('no');
+        return 'Opt-out recorded. Do not speak — the system will play the closing message.';
       },
     }),
 

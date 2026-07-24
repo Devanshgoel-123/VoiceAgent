@@ -10,21 +10,25 @@ describe('recordPropertyAvailability tool behavior', () => {
       setSpokenLanguage: vi.fn(),
       getCurrentLanguage: vi.fn(() => 'en-IN'),
       recordOwnerOutcome: vi.fn(),
+      recordDoNotCall: vi.fn(),
     };
 
     const metadata: CallMetadata = {
       job_id: 'job-tool-test',
       property_address: '42 Indiranagar',
       company_name: 'Galynest',
+      company_website: 'galynest.com',
       caller_name: 'Aditi',
     };
 
     const state = {
       jobId: 'job-tool-test',
       companyName: 'Galynest',
+      companyWebsite: 'galynest.com',
       callMetadata: metadata,
       propertyAvailable: 'not_asked' as const,
       outcomeRecorded: false,
+      doNotCallRecorded: false,
     };
 
     const tools = buildPropertyTools(state, lifecycle);
@@ -40,5 +44,37 @@ describe('recordPropertyAvailability tool behavior', () => {
     );
     expect(lifecycle.scheduleHangup).toHaveBeenCalledWith('yes');
     expect(state.propertyAvailable).toBe('yes');
+  });
+
+  it('records explicit opt-out and schedules hangup', async () => {
+    const lifecycle: CallLifecycle = {
+      scheduleHangup: vi.fn(),
+      setSpokenLanguage: vi.fn(),
+      getCurrentLanguage: vi.fn(() => 'en-IN'),
+      recordOwnerOutcome: vi.fn(),
+      recordDoNotCall: vi.fn(),
+    };
+
+    const state = {
+      jobId: 'job-tool-test',
+      companyName: 'Galynest',
+      companyWebsite: 'galynest.com',
+      callMetadata: {} as CallMetadata,
+      propertyAvailable: 'not_asked' as const,
+      outcomeRecorded: false,
+      doNotCallRecorded: false,
+    };
+
+    const tools = buildPropertyTools(state, lifecycle);
+    const result = await tools.recordDoNotCall.execute({
+      ownerRequest: 'Please do not call me again',
+    });
+
+    expect(result).toContain('Opt-out recorded');
+    expect(lifecycle.recordDoNotCall).toHaveBeenCalledWith(
+      'Please do not call me again',
+    );
+    expect(lifecycle.scheduleHangup).toHaveBeenCalledWith('no');
+    expect(state.doNotCallRecorded).toBe(true);
   });
 });

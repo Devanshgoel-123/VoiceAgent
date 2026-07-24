@@ -6,24 +6,62 @@ import {
 
 describe('availability closing messages', () => {
   it('explains follow-up and number saving after a yes', () => {
-    const text = availabilityClosing('yes');
+    const text = availabilityClosing('yes', 'en-IN', {
+      companyName: 'Galynest',
+      companyWebsite: 'galynest.com',
+    });
     expect(text).toContain('continue searching for tenants');
     expect(text).toContain('as soon as we find a tenant for you');
     expect(text).toContain('saving this number as Galynest Property Team');
+    expect(text).not.toContain('Galiynest');
+    expect(text).not.toContain('Gullynest');
   });
 
   it('explains record update and future website option after a no', () => {
-    const text = availabilityClosing('no');
+    const text = availabilityClosing('no', 'en-IN', {
+      companyName: 'Galynest',
+      companyWebsite: 'galynest.com',
+    });
     expect(text).toContain('update our records');
     expect(text).toContain('will not disturb you again');
-    expect(text).toContain('Galynest dot com');
+    expect(text).toContain('galynest dot com');
   });
 
   it('uses the last spoken language for the closing', () => {
-    expect(availabilityClosing('yes', 'hi-IN')).toContain('किरायेदार');
-    expect(availabilityClosing('yes', 'kn-IN')).toContain('ಬಾಡಿಗೆದಾರ');
-    expect(availabilityClosing('no', 'hi-IN')).toContain('रिकॉर्ड अपडेट');
-    expect(availabilityClosing('no', 'kn-IN')).toContain('ದಾಖಲೆಗಳನ್ನು ನವೀಕರಿಸುತ್ತೇವೆ');
+    expect(
+      availabilityClosing('yes', 'hi-IN', {
+        companyName: 'Galynest',
+        companyWebsite: 'galynest.com',
+      }),
+    ).toContain('किरायेदार');
+    expect(
+      availabilityClosing('yes', 'kn-IN', {
+        companyName: 'Galynest',
+        companyWebsite: 'galynest.com',
+      }),
+    ).toContain('ಬಾಡಿಗೆದಾರ');
+    expect(
+      availabilityClosing('no', 'hi-IN', {
+        companyName: 'Galynest',
+        companyWebsite: 'galynest.com',
+      }),
+    ).toContain('रिकॉर्ड अपडेट');
+    expect(
+      availabilityClosing('no', 'kn-IN', {
+        companyName: 'Galynest',
+        companyWebsite: 'galynest.com',
+      }),
+    ).toContain('ದಾಖಲೆಗಳನ್ನು ನವೀಕರಿಸುತ್ತೇವೆ');
+  });
+
+  it('interpolates custom branding without hardcoded variants', () => {
+    const text = availabilityClosing('yes', 'en-IN', {
+      companyName: 'Acme Homes',
+      companyWebsite: 'acme.homes',
+    });
+    expect(text).toContain('Acme Homes team');
+    expect(text).toContain('Acme Homes Property Team');
+    expect(text).not.toContain('Galynest');
   });
 });
 
@@ -178,6 +216,7 @@ describe('scripted opening messages', () => {
     );
     const params = {
       companyName: 'Galinest',
+      companyWebsite: 'galinest.com',
       callerName: 'Jitesh',
       propertyAddress: '42, Indiranagar',
     };

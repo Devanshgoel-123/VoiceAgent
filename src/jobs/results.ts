@@ -14,7 +14,9 @@ export class CallResultStore {
   async save(result: CallResult): Promise<string> {
     await mkdir(this.dir, { recursive: true });
     const path = join(this.dir, `${result.jobId}.json`);
-    await writeFile(path, JSON.stringify(result, null, 2), 'utf-8');
+    // Never persist verbatim transcripts on disk — DB is the sole transcript store.
+    const { transcript: _transcript, ...safe } = result;
+    await writeFile(path, JSON.stringify(safe, null, 2), 'utf-8');
     return path;
   }
 

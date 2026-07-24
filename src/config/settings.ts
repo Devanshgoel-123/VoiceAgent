@@ -22,12 +22,18 @@ export interface Settings {
   apiPort: number;
   apiSecretKey: string;
   companyName: string;
+  companyWebsite: string;
   callerName: string;
   databaseUrl?: string;
   llmModel: string;
   defaultLanguage: string;
   telephonySampleRate: number;
   dispatchCooldownMs: number;
+  callingHoursStartHour: number;
+  callingHoursEndHour: number;
+  callingHoursTimeZone: string;
+  /** Days to retain verbatim transcripts in Postgres (default 15). */
+  callDataRetentionDays: number;
   appEnv: AppEnv;
   callDebugLogging: boolean;
 }
@@ -112,7 +118,10 @@ export function getSettings(): Settings {
     apiHost: process.env.API_HOST ?? '0.0.0.0',
     apiPort: Number(process.env.API_PORT ?? '8080'),
     apiSecretKey: required('API_SECRET_KEY'),
-    companyName: process.env.COMPANY_NAME ?? 'Galynest',
+    companyName: process.env.COMPANY_NAME?.trim() || 'Galynest',
+    companyWebsite:
+      process.env.COMPANY_WEBSITE?.trim().replace(/^https?:\/\//i, '').replace(/\/$/, '') ||
+      'galynest.com',
     callerName: process.env.CALLER_NAME?.trim() || 'Aditi',
     databaseUrl: process.env.DATABASE_URL?.trim() || undefined,
     llmModel: process.env.LLM_MODEL ?? 'sarvam-105b',
@@ -122,6 +131,10 @@ export function getSettings(): Settings {
       process.env.DISPATCH_COOLDOWN_MS,
       86_400_000,
     ),
+    callingHoursStartHour: parsePositiveInt(process.env.CALLING_HOURS_START_HOUR, 9),
+    callingHoursEndHour: parsePositiveInt(process.env.CALLING_HOURS_END_HOUR, 20),
+    callingHoursTimeZone: process.env.CALLING_HOURS_TZ?.trim() || 'Asia/Kolkata',
+    callDataRetentionDays: parsePositiveInt(process.env.CALL_DATA_RETENTION_DAYS, 7),
     appEnv,
     callDebugLogging,
   };

@@ -7,7 +7,8 @@ export async function isPhoneSuppressed(phoneNumber: string): Promise<boolean> {
     return await getCallLogRepository().isPhoneSuppressed(phoneNumber);
   } catch (error) {
     callWarn(`[CALL] suppression.check_fail phone=${phoneNumber} error=${error}`);
-    return false;
+    // Fail closed for suppression checks when DB is configured but errors.
+    throw error;
   }
 }
 
