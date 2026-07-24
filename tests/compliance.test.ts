@@ -43,6 +43,11 @@ function settings(): Pick<
     callDataRetentionDays: 15,
     apiWriteRateLimitPerMinute: 30,
     apiReadRateLimitPerMinute: 60,
+    voiceCronPageSize: 50,
+    voiceCronMaxDispatch: 50,
+    voiceCronConcurrency: 3,
+    voiceCronRecontactDays: 7,
+    voiceCronStatus: 'LIVE',
     appEnv: 'developer',
     callDebugLogging: false,
   };

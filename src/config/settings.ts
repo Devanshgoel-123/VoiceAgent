@@ -36,6 +36,16 @@ export interface Settings {
   callDataRetentionDays: number;
   apiWriteRateLimitPerMinute: number;
   apiReadRateLimitPerMinute: number;
+  /** GullyNest marketplace base URL (optional; enables voice cron + outcome PATCH). */
+  voiceAgentApiBaseUrl?: string;
+  /** Shared secret for `X-Voice-Admin-Secret` (optional). */
+  voiceAgentApiSecret?: string;
+  voiceCronPageSize: number;
+  voiceCronMaxDispatch: number;
+  voiceCronConcurrency: number;
+  voiceCronRecontactDays: number;
+  voiceCronListingKind?: string;
+  voiceCronStatus: string;
   appEnv: AppEnv;
   callDebugLogging: boolean;
 }
@@ -145,6 +155,17 @@ export function getSettings(): Settings {
       process.env.API_READ_RATE_LIMIT_PER_MINUTE,
       60,
     ),
+    voiceAgentApiBaseUrl: process.env.VOICE_AGENT_API_BASE_URL?.trim() || undefined,
+    voiceAgentApiSecret: process.env.VOICE_AGENT_API_SECRET?.trim() || undefined,
+    voiceCronPageSize: Math.min(
+      200,
+      parsePositiveInt(process.env.VOICE_CRON_PAGE_SIZE, 50),
+    ),
+    voiceCronMaxDispatch: parsePositiveInt(process.env.VOICE_CRON_MAX_DISPATCH, 5),
+    voiceCronConcurrency: parsePositiveInt(process.env.VOICE_CRON_CONCURRENCY, 3),
+    voiceCronRecontactDays: parsePositiveInt(process.env.VOICE_CRON_RECONTACT_DAYS, 7),
+    voiceCronListingKind: process.env.VOICE_CRON_LISTING_KIND?.trim() || undefined,
+    voiceCronStatus: process.env.VOICE_CRON_STATUS?.trim() || 'LIVE',
     appEnv,
     callDebugLogging,
   };
