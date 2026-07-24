@@ -4,6 +4,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import type { OwnerOutcome, TranscriptEntry } from '../jobs/call-log-types.js';
@@ -38,5 +39,20 @@ export const callLogs = pgTable('call_logs', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+/** Owners who declined or opted out — checked before every dispatch. */
+export const suppressedNumbers = pgTable(
+  'suppressed_numbers',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    phoneNumber: text('phone_number').notNull(),
+    reason: text('reason').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    phoneUnique: uniqueIndex('suppressed_numbers_phone_unique').on(table.phoneNumber),
+  }),
+);
+
 export type CallLogRow = typeof callLogs.$inferSelect;
 export type NewCallLogRow = typeof callLogs.$inferInsert;
+export type SuppressedNumberRow = typeof suppressedNumbers.$inferSelect;

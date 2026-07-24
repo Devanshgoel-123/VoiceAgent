@@ -8,13 +8,18 @@ import { OWNER_OPENING_WAIT_MS } from '../config/call-config.js';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
 import {
+  safeCompleteCallLog,
   safeMarkCallAnswered,
   safeMarkCallFailed,
   safeMarkCallInProgress,
   safeMarkCallNoAnswer,
 } from '../db/call-log-repository.js';
 import { CallSessionRecord } from '../jobs/call-session-record.js';
+import { saveCallResultSnapshot } from '../jobs/persist-call-result.js';
+import { safeAddPhoneSuppression } from '../jobs/suppression.js';
 import { callError, callInfo, callWarn } from './call-logger.js';
+import { registerProcessSafetyHandlers } from './process-safety.js';
+import { isNoAnswerError } from './telephony-errors.js';
 import { LanguageManager } from './language-manager.js';
 import type { CallMetadata } from './types.js';
 
@@ -39,111 +44,142 @@ export function createWorkerConfig(
   agentFactory: AgentFactory,
   options: WorkerConfigOptions = {},
 ): WorkerConfig {
+  registerProcessSafetyHandlers('worker');
+
   return {
     entry: async (ctx: JobContext) => {
       const settings = options.settings ?? getSettings();
       const logger = log().child({ room: ctx.room.name });
       const metadata = parseMetadata(ctx.job.metadata);
+      let callRecord: CallSessionRecord | undefined;
 
-      callInfo(`call: start job=${metadata.job_id ?? ctx.job.id}`, logger);
+      try {
+        callInfo(`call: start job=${metadata.job_id ?? ctx.job.id}`, logger);
 
-      const isLocalTest = ctx.isFakeJob;
-      const effectiveMetadata =
-        isLocalTest && Object.keys(metadata).length === 0
-          ? getConsoleTestMetadata(settings)
-          : metadata;
+        const isLocalTest = ctx.isFakeJob;
+        const effectiveMetadata =
+          isLocalTest && Object.keys(metadata).length === 0
+            ? getConsoleTestMetadata(settings)
+            : metadata;
 
-      const roomName = ctx.room.name || ctx.job.room?.name;
-      if (!roomName) {
-        callError('call: missing room name', logger);
-        ctx.shutdown();
-        return;
-      }
-
-      const phoneNumber = effectiveMetadata.phone_number as string | undefined;
-      const participantIdentity = `owner-${effectiveMetadata.property_id ?? 'unknown'}`;
-      const isOutboundCall = !isLocalTest && !!phoneNumber;
-
-      if (isOutboundCall) {
-        await ctx.connect(undefined, AutoSubscribe.AUDIO_ONLY);
-      }
-
-      const pipelineProvider = options.pipeline ?? new SarvamVoicePipeline(settings);
-      const requestedTts = String(effectiveMetadata.tts_provider ?? '').toLowerCase();
-      const ttsProvider =
-        requestedTts === 'elevenlabs' || requestedTts === 'sarvam'
-          ? requestedTts
-          : settings.ttsProvider;
-
-      const pipeline = pipelineProvider.createBundle({ ttsProvider });
-      const callRecord = new CallSessionRecord(effectiveMetadata);
-      callRecord.markInProgress();
-      await safeMarkCallInProgress(callRecord.jobId);
-
-      const callSession = new LiveKitCallSession({
-        jobContext: ctx,
-        pipeline,
-        isOutboundCall,
-        participantIdentity,
-        logger,
-        callRecord,
-      });
-
-      callSession.createSession();
-      const agent = agentFactory(effectiveMetadata, callSession);
-      await callSession.start(agent);
-
-      if (!isLocalTest && phoneNumber && settings.sipOutboundTrunkId) {
-        try {
-          const sip = new LiveKitSipAdapter(settings, logger);
-          await sip.dial({
-            roomName,
-            phoneNumber,
-            participantIdentity,
-            participantName: (metadata.owner_name as string) ?? 'Property Owner',
-          });
-          await sip.waitForMicrophone(ctx.room, participantIdentity);
-          callSession.setParticipant(participantIdentity);
-          callRecord.markAnswered();
-          await safeMarkCallAnswered(callRecord.jobId);
-
-          callSession.armOpeningGreeting({
-            waitMs: OWNER_OPENING_WAIT_MS,
-            preferredLanguage:
-              LanguageManager.normalizeLanguageCode(
-                effectiveMetadata.preferred_language as string | undefined,
-              ) ?? 'en-IN',
-            buildOpeningText: (language) =>
-              openingForLanguage(
-                {
-                  companyName:
-                    (effectiveMetadata.company_name as string) ?? settings.companyName,
-                  callerName:
-                    (effectiveMetadata.caller_name as string) ?? settings.callerName,
-                  propertyAddress:
-                    (effectiveMetadata.property_address as string) ?? 'your property',
-                },
-                language,
-              ),
-          });
-        } catch (error) {
-          callError(`call: outbound failed ${error}`, logger);
-          const message = String(error);
-          if (message.includes('Timed out waiting for microphone')) {
-            callRecord.markNoAnswer(message);
-            await safeMarkCallNoAnswer(callRecord.jobId, message);
-          } else {
-            callRecord.markFailed(message);
-            await safeMarkCallFailed(callRecord.jobId, message);
-          }
+        const roomName = ctx.room.name || ctx.job.room?.name;
+        if (!roomName) {
+          callError('call: missing room name', logger);
           ctx.shutdown();
           return;
         }
-      } else if (!isLocalTest && phoneNumber) {
-        callWarn('call: skip dial — SIP_OUTBOUND_TRUNK_ID not set', logger);
-      }
 
-      await callSession.waitUntilClosed();
+        const phoneNumber = effectiveMetadata.phone_number as string | undefined;
+        const participantIdentity = `owner-${effectiveMetadata.property_id ?? 'unknown'}`;
+        const isOutboundCall = !isLocalTest && !!phoneNumber;
+
+        if (isOutboundCall) {
+          await ctx.connect(undefined, AutoSubscribe.AUDIO_ONLY);
+        }
+
+        const pipelineProvider = options.pipeline ?? new SarvamVoicePipeline(settings);
+        const requestedTts = String(effectiveMetadata.tts_provider ?? '').toLowerCase();
+        const ttsProvider =
+          requestedTts === 'elevenlabs' || requestedTts === 'sarvam'
+            ? requestedTts
+            : settings.ttsProvider;
+
+        const pipeline = pipelineProvider.createBundle({ ttsProvider });
+        callRecord = new CallSessionRecord(effectiveMetadata);
+        callRecord.markInProgress();
+        await safeMarkCallInProgress(callRecord.jobId);
+
+        const callSession = new LiveKitCallSession({
+          jobContext: ctx,
+          pipeline,
+          isOutboundCall,
+          participantIdentity,
+          logger,
+          callRecord,
+          onPersist: async (snapshot) => {
+            await safeCompleteCallLog(snapshot);
+            try {
+              await saveCallResultSnapshot(snapshot);
+            } catch (error) {
+              callWarn(`file snapshot failed job=${snapshot.jobId}: ${error}`, logger);
+            }
+            if (snapshot.ownerOutcome === 'no' && snapshot.phoneNumber) {
+              await safeAddPhoneSuppression(snapshot.phoneNumber, 'owner_declined');
+            }
+          },
+        });
+
+        callSession.createSession();
+        const agent = agentFactory(effectiveMetadata, callSession);
+        await callSession.start(agent);
+
+        if (!isLocalTest && phoneNumber) {
+          if (!settings.sipOutboundTrunkId) {
+            const message = 'SIP_OUTBOUND_TRUNK_ID is not configured';
+            callError(`call: ${message}`, logger);
+            callRecord.markFailed(message);
+            await safeMarkCallFailed(callRecord.jobId, message);
+            ctx.shutdown();
+            return;
+          }
+
+          try {
+            const sip = new LiveKitSipAdapter(settings, logger);
+            await sip.dial({
+              roomName,
+              phoneNumber,
+              participantIdentity,
+              participantName: (metadata.owner_name as string) ?? 'Property Owner',
+            });
+            await sip.waitForMicrophone(ctx.room, participantIdentity);
+            callSession.setParticipant(participantIdentity);
+            callRecord.markAnswered();
+            await safeMarkCallAnswered(callRecord.jobId);
+
+            callSession.armOpeningGreeting({
+              waitMs: OWNER_OPENING_WAIT_MS,
+              preferredLanguage:
+                LanguageManager.normalizeLanguageCode(
+                  effectiveMetadata.preferred_language as string | undefined,
+                ) ?? 'en-IN',
+              buildOpeningText: (language) =>
+                openingForLanguage(
+                  {
+                    companyName:
+                      (effectiveMetadata.company_name as string) ?? settings.companyName,
+                    callerName:
+                      (effectiveMetadata.caller_name as string) ?? settings.callerName,
+                    propertyAddress:
+                      (effectiveMetadata.property_address as string) ?? 'your property',
+                  },
+                  language,
+                ),
+            });
+          } catch (error) {
+            callError(`call: outbound failed ${error}`, logger);
+            const message = String(error);
+            if (isNoAnswerError(error)) {
+              callRecord.markNoAnswer(message);
+              await safeMarkCallNoAnswer(callRecord.jobId, message);
+            } else {
+              callRecord.markFailed(message);
+              await safeMarkCallFailed(callRecord.jobId, message);
+            }
+            ctx.shutdown();
+            return;
+          }
+        }
+
+        await callSession.waitUntilClosed();
+      } catch (error) {
+        callError(`call: unhandled job error ${error}`, logger);
+        if (callRecord) {
+          const message = String(error);
+          callRecord.markFailed(message);
+          await safeMarkCallFailed(callRecord.jobId, message);
+        }
+        ctx.shutdown();
+      }
     },
   };
 }

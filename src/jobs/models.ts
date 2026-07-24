@@ -32,7 +32,6 @@ export interface PropertyAvailabilityCallJob {
   companyName?: string;
   callerName?: string;
   preferredLanguage?: string;
-  scheduledAt?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -67,10 +66,9 @@ export function createPropertyAvailabilityJob(
     jobId: input.jobId ?? crypto.randomUUID(),
     owner: input.owner,
     property: input.property,
-    companyName: input.companyName ?? 'Galynest',
+    companyName: input.companyName ?? getSettings().companyName,
     callerName: input.callerName ?? getSettings().callerName,
     preferredLanguage: input.preferredLanguage,
-    scheduledAt: input.scheduledAt,
     metadata: input.metadata ?? {},
   };
 }

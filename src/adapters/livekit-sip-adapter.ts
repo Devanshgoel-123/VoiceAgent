@@ -1,5 +1,6 @@
 import { log } from '@livekit/agents';
 import { callError } from '../core/call-logger.js';
+import { NoAnswerError } from '../core/telephony-errors.js';
 import {
   RoomEvent,
   TrackSource,
@@ -87,7 +88,11 @@ export class LiveKitSipAdapter {
       const timer = setTimeout(() => {
         cleanup();
         callError(`[CALL] sip.waitForMicrophone:timeout identity=${participantIdentity}`, this.logger);
-        reject(new Error(`Timed out waiting for microphone track from ${participantIdentity}`));
+        reject(
+          new NoAnswerError(
+            `Timed out waiting for microphone track from ${participantIdentity}`,
+          ),
+        );
       }, timeoutMs);
 
       const onPublished = (
