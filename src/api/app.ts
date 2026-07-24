@@ -38,7 +38,7 @@ export function createApp(
 
   const callWriteLimiter = rateLimit({
     windowMs: 60_000,
-    max: options.writeRateLimitMax ?? 30,
+    max: options.writeRateLimitMax ?? settings.apiWriteRateLimitPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests' },
@@ -46,7 +46,7 @@ export function createApp(
 
   const callReadLimiter = rateLimit({
     windowMs: 60_000,
-    max: options.readRateLimitMax ?? 60,
+    max: options.readRateLimitMax ?? settings.apiReadRateLimitPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests' },

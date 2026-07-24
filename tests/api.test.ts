@@ -14,12 +14,25 @@ vi.mock('../src/db/call-log-repository.js', () => ({
   getCallLogRepository: vi.fn(() => ({
     getByJobId: vi.fn(async () => null),
     listRecent: vi.fn(async () => []),
-    getCallPreference: vi.fn(async () => null),
+    getCallPreference: vi.fn(async () => ({
+      id: 'pref-1',
+      phoneNumber: '+919876543210',
+      consentStatus: 'granted',
+      consentSource: 'unit-test',
+      consentAt: new Date(),
+      dnd: false,
+      dndSource: null,
+      dndAt: null,
+      optedOutAt: null,
+      optOutReason: null,
+      updatedAt: new Date(),
+      createdAt: new Date(),
+    })),
     upsertCallPreference: vi.fn(async (input: { phoneNumber: string }) => ({
       phoneNumber: input.phoneNumber,
-      consentStatus: 'unknown',
-      consentSource: null,
-      consentAt: null,
+      consentStatus: 'granted',
+      consentSource: 'unit-test',
+      consentAt: new Date(),
       dnd: false,
       dndSource: null,
       dndAt: null,
@@ -59,6 +72,8 @@ export function testSettings(overrides: Partial<Settings> = {}): Settings {
     callingHoursEndHour: 20,
     callingHoursTimeZone: 'Asia/Kolkata',
     callDataRetentionDays: 15,
+    apiWriteRateLimitPerMinute: 30,
+    apiReadRateLimitPerMinute: 60,
     appEnv: 'developer',
     callDebugLogging: false,
     ...overrides,
@@ -258,5 +273,60 @@ describe('API server', () => {
     const limited = await get();
     expect(limited.status).toBe(429);
     expect(limited.body.error).toBe('Too many requests');
+  });
+
+  it('rejects unauthenticated preference updates', async () => {
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings());
+
+    const res = await request(app).put('/calls/preferences').send({
+      phone_number: '+919876543210',
+      consent_status: 'granted',
+    });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('updates and reads preferences with API auth', async () => {
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings());
+
+    const put = await request(app)
+      .put('/calls/preferences')
+      .set('x-api-key', 'test-secret')
+      .send({
+        phone_number: '+919876543210',
+        consent_status: 'granted',
+        consent_source: 'unit-test',
+      });
+
+    expect(put.status).toBe(200);
+    expect(put.body.phoneNumber).toBe('+919876543210');
+
+    const get = await request(app)
+      .get('/calls/preferences/%2B919876543210')
+      .set('Authorization', 'Bearer test-secret');
+
+    expect(get.status).toBe(200);
+    expect(get.body.phoneNumber).toBe('+919876543210');
+    expect(get.body.consentStatus).toBe('granted');
+  });
+
+  it('rate limits PUT /calls/preferences', async () => {
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings(), { writeRateLimitMax: 2 });
+
+    const put = () =>
+      request(app)
+        .put('/calls/preferences')
+        .set('Authorization', 'Bearer test-secret')
+        .send({
+          phone_number: '+919876543210',
+          consent_status: 'granted',
+        });
+
+    expect((await put()).status).toBe(200);
+    expect((await put()).status).toBe(200);
+    expect((await put()).status).toBe(429);
   });
 });

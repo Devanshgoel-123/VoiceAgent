@@ -41,6 +41,8 @@ function settings(): Pick<
     callingHoursEndHour: 20,
     callingHoursTimeZone: 'Asia/Kolkata',
     callDataRetentionDays: 15,
+    apiWriteRateLimitPerMinute: 30,
+    apiReadRateLimitPerMinute: 60,
     appEnv: 'developer',
     callDebugLogging: false,
   };

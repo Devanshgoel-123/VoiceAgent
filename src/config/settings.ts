@@ -34,6 +34,8 @@ export interface Settings {
   callingHoursTimeZone: string;
   /** Days to retain verbatim transcripts in Postgres (default 15). */
   callDataRetentionDays: number;
+  apiWriteRateLimitPerMinute: number;
+  apiReadRateLimitPerMinute: number;
   appEnv: AppEnv;
   callDebugLogging: boolean;
 }
@@ -134,7 +136,15 @@ export function getSettings(): Settings {
     callingHoursStartHour: parsePositiveInt(process.env.CALLING_HOURS_START_HOUR, 9),
     callingHoursEndHour: parsePositiveInt(process.env.CALLING_HOURS_END_HOUR, 20),
     callingHoursTimeZone: process.env.CALLING_HOURS_TZ?.trim() || 'Asia/Kolkata',
-    callDataRetentionDays: parsePositiveInt(process.env.CALL_DATA_RETENTION_DAYS, 7),
+    callDataRetentionDays: parsePositiveInt(process.env.CALL_DATA_RETENTION_DAYS, 15),
+    apiWriteRateLimitPerMinute: parsePositiveInt(
+      process.env.API_WRITE_RATE_LIMIT_PER_MINUTE,
+      30,
+    ),
+    apiReadRateLimitPerMinute: parsePositiveInt(
+      process.env.API_READ_RATE_LIMIT_PER_MINUTE,
+      60,
+    ),
     appEnv,
     callDebugLogging,
   };

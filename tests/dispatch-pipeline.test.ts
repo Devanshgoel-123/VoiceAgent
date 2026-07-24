@@ -29,6 +29,8 @@ const settings = (): Settings => ({
   callingHoursEndHour: 24,
   callingHoursTimeZone: 'UTC',
   callDataRetentionDays: 15,
+  apiWriteRateLimitPerMinute: 30,
+  apiReadRateLimitPerMinute: 60,
   appEnv: 'developer',
   callDebugLogging: false,
   databaseUrl: 'postgresql://example',
