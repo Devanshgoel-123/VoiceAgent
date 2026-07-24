@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import 'dotenv/config';
 import { getSettings } from '../config/settings.js';
-import { CallJobDispatcher } from '../jobs/dispatcher.js';
+import { secureDispatchPropertyAvailabilityCall } from '../jobs/dispatch-pipeline.js';
 import { createPropertyAvailabilityJob } from '../jobs/models.js';
 
 function parseArgs(argv: string[]) {
@@ -55,9 +55,12 @@ async function main() {
         : {},
   });
 
-  const dispatcher = new CallJobDispatcher(settings);
-  const result = await dispatcher.dispatchPropertyAvailabilityCall(job);
-  console.log(JSON.stringify(result, null, 2));
+  const outcome = await secureDispatchPropertyAvailabilityCall(job, settings);
+  if (!outcome.ok) {
+    console.error(JSON.stringify(outcome.failure, null, 2));
+    process.exit(1);
+  }
+  console.log(JSON.stringify(outcome.result, null, 2));
 }
 
 main().catch((err) => {

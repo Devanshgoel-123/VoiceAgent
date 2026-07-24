@@ -1,4 +1,5 @@
-import { and, eq, gte, inArray, or } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+import { and, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
 import { callWarn } from '../core/call-logger.js';
 import type {
   CallLogSnapshot,
@@ -8,7 +9,14 @@ import { isSuccessfulOutcome } from '../jobs/call-log-types.js';
 import type { PropertyAvailabilityCallJob } from '../jobs/models.js';
 import type { DispatchResult } from '../jobs/models.js';
 import { getDb, isDatabaseEnabled } from './client.js';
-import { callLogs, suppressedNumbers, type CallLogRow } from './schema.js';
+import {
+  callLogs,
+  callPreferences,
+  suppressedNumbers,
+  type CallLogRow,
+  type CallPreferenceRow,
+  type ConsentStatus,
+} from './schema.js';
 
 function emptyTranscriptDefaults(): {
   languages: string[];
@@ -16,6 +24,39 @@ function emptyTranscriptDefaults(): {
   metadata: Record<string, unknown>;
 } {
   return { languages: [], transcript: [], metadata: {} };
+}
+
+const ACTIVE_STATUSES = ['pending', 'dispatched', 'in_progress'] as const;
+
+function advisoryLockKeys(propertyId: string, phoneNumber: string): [number, number] {
+  const digest = createHash('sha256')
+    .update(`${propertyId}\0${phoneNumber}`)
+    .digest();
+  // Two signed 32-bit ints for pg_advisory_xact_lock(int, int)
+  const key1 = digest.readInt32BE(0);
+  const key2 = digest.readInt32BE(4);
+  return [key1, key2];
+}
+
+export type ReserveDispatchErrorCode =
+  | 'conflict_active'
+  | 'conflict_cooldown'
+  | 'unique_violation';
+
+export class ReserveDispatchError extends Error {
+  readonly code: ReserveDispatchErrorCode;
+  readonly existing?: CallLogRow;
+
+  constructor(
+    code: ReserveDispatchErrorCode,
+    message: string,
+    existing?: CallLogRow,
+  ) {
+    super(message);
+    this.name = 'ReserveDispatchError';
+    this.code = code;
+    this.existing = existing;
+  }
 }
 
 export class CallLogRepository {
@@ -65,6 +106,123 @@ export class CallLogRepository {
           updatedAt: now,
         },
       });
+  }
+
+  /**
+   * Atomically reserve a (property_id, phone_number) slot under an advisory lock.
+   * Inserts a pending row. Caller must attach dispatch metadata or mark failed.
+   */
+  async reserveDispatchSlot(
+    job: PropertyAvailabilityCallJob,
+    cooldownMs: number,
+  ): Promise<CallLogRow> {
+    if (!isDatabaseEnabled()) {
+      throw new Error('DATABASE_URL is required for atomic dispatch reservation');
+    }
+
+    const db = getDb();
+    const [key1, key2] = advisoryLockKeys(
+      job.property.propertyId,
+      job.owner.phoneNumber,
+    );
+
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(${key1}, ${key2})`);
+
+      const activeRows = await tx
+        .select()
+        .from(callLogs)
+        .where(
+          and(
+            inArray(callLogs.status, [...ACTIVE_STATUSES]),
+            eq(callLogs.propertyId, job.property.propertyId),
+            eq(callLogs.phoneNumber, job.owner.phoneNumber),
+          ),
+        )
+        .limit(1);
+
+      if (activeRows[0]) {
+        throw new ReserveDispatchError(
+          'conflict_active',
+          'A call for this property and phone number is already active',
+          activeRows[0],
+        );
+      }
+
+      const cutoff = new Date(Date.now() - cooldownMs);
+      const recentRows = await tx
+        .select()
+        .from(callLogs)
+        .where(
+          and(
+            gte(callLogs.createdAt, cutoff),
+            eq(callLogs.propertyId, job.property.propertyId),
+            eq(callLogs.phoneNumber, job.owner.phoneNumber),
+          ),
+        )
+        .limit(1);
+
+      if (recentRows[0]) {
+        throw new ReserveDispatchError(
+          'conflict_cooldown',
+          'A call for this property and phone number was placed recently',
+          recentRows[0],
+        );
+      }
+
+      const now = new Date();
+      const base = emptyTranscriptDefaults();
+      const inserted = await tx
+        .insert(callLogs)
+        .values({
+          jobId: job.jobId,
+          direction: 'outbound',
+          status: 'pending',
+          ownerOutcome: 'not_asked',
+          success: false,
+          answered: false,
+          phoneNumber: job.owner.phoneNumber,
+          ownerName: job.owner.name,
+          propertyId: job.property.propertyId,
+          propertyAddress: job.property.address,
+          callerName: job.callerName,
+          companyName: job.companyName,
+          languages: base.languages,
+          transcript: base.transcript,
+          metadata: {
+            ...(job.metadata ?? {}),
+            job_type: 'property_availability',
+            preferred_language: job.preferredLanguage,
+          },
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning();
+
+      return inserted[0]!;
+    });
+  }
+
+  async attachDispatch(
+    jobId: string,
+    dispatch: Pick<DispatchResult, 'roomName' | 'dispatchId'>,
+  ): Promise<void> {
+    if (!isDatabaseEnabled()) return;
+
+    const db = getDb();
+    await db
+      .update(callLogs)
+      .set({
+        status: 'dispatched',
+        roomName: dispatch.roomName,
+        dispatchId: dispatch.dispatchId,
+        updatedAt: new Date(),
+      })
+      .where(eq(callLogs.jobId, jobId));
+  }
+
+  async releaseReservation(jobId: string, summary: string): Promise<void> {
+    await this.markFailed(jobId, summary);
   }
 
   async markInProgress(jobId: string): Promise<void> {
@@ -191,7 +349,39 @@ export class CallLogRepository {
     return db.select().from(callLogs).limit(limit);
   }
 
-  /** Block duplicate dials while a call is active or within the cooldown window. */
+  /**
+   * Clear verbatim transcripts older than retentionDays.
+   * Keeps outcome, summary, phone, and metadata (marks purged).
+   */
+  async purgeExpiredTranscripts(retentionDays: number): Promise<number> {
+    if (!isDatabaseEnabled() || retentionDays <= 0) return 0;
+
+    const db = getDb();
+    const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+    const purgedAt = new Date().toISOString();
+
+    const updated = await db
+      .update(callLogs)
+      .set({
+        transcript: [],
+        metadata: sql`coalesce(${callLogs.metadata}, '{}'::jsonb) || ${JSON.stringify({
+          transcript_purged_at: purgedAt,
+        })}::jsonb`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          lt(callLogs.completedAt, cutoff),
+          sql`jsonb_typeof(${callLogs.transcript}) = 'array'`,
+          sql`jsonb_array_length(${callLogs.transcript}) > 0`,
+        ),
+      )
+      .returning({ id: callLogs.id });
+
+    return updated.length;
+  }
+
+  /** Legacy non-atomic check — prefer reserveDispatchSlot for production dispatch. */
   async findBlockingDispatch(input: {
     propertyId: string;
     phoneNumber: string;
@@ -200,16 +390,17 @@ export class CallLogRepository {
     if (!isDatabaseEnabled()) return null;
 
     const db = getDb();
-    const activeStatuses = ['dispatched', 'in_progress'] as const;
     const activeRows = await db
       .select()
       .from(callLogs)
       .where(
         and(
-          inArray(callLogs.status, [...activeStatuses]),
+          inArray(callLogs.status, [...ACTIVE_STATUSES]),
           or(
-            eq(callLogs.propertyId, input.propertyId),
-            eq(callLogs.phoneNumber, input.phoneNumber),
+            and(
+              eq(callLogs.propertyId, input.propertyId),
+              eq(callLogs.phoneNumber, input.phoneNumber),
+            ),
           ),
         ),
       )
@@ -224,10 +415,8 @@ export class CallLogRepository {
       .where(
         and(
           gte(callLogs.createdAt, cutoff),
-          or(
-            eq(callLogs.propertyId, input.propertyId),
-            eq(callLogs.phoneNumber, input.phoneNumber),
-          ),
+          eq(callLogs.propertyId, input.propertyId),
+          eq(callLogs.phoneNumber, input.phoneNumber),
         ),
       )
       .limit(1);
@@ -255,6 +444,103 @@ export class CallLogRepository {
       .insert(suppressedNumbers)
       .values({ phoneNumber, reason })
       .onConflictDoNothing({ target: suppressedNumbers.phoneNumber });
+  }
+
+  async getCallPreference(phoneNumber: string): Promise<CallPreferenceRow | null> {
+    if (!isDatabaseEnabled()) return null;
+
+    const db = getDb();
+    const rows = await db
+      .select()
+      .from(callPreferences)
+      .where(eq(callPreferences.phoneNumber, phoneNumber))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async upsertCallPreference(input: {
+    phoneNumber: string;
+    consentStatus?: ConsentStatus;
+    consentSource?: string;
+    dnd?: boolean;
+    dndSource?: string;
+    optedOut?: boolean;
+    optOutReason?: string;
+  }): Promise<CallPreferenceRow> {
+    if (!isDatabaseEnabled()) {
+      throw new Error('DATABASE_URL is required to update call preferences');
+    }
+
+    const db = getDb();
+    const now = new Date();
+    const existing = await this.getCallPreference(input.phoneNumber);
+
+    const values = {
+      phoneNumber: input.phoneNumber,
+      consentStatus: input.consentStatus ?? existing?.consentStatus ?? 'unknown',
+      consentSource: input.consentSource ?? existing?.consentSource ?? null,
+      consentAt:
+        input.consentStatus !== undefined
+          ? now
+          : (existing?.consentAt ?? null),
+      dnd: input.dnd ?? existing?.dnd ?? false,
+      dndSource: input.dndSource ?? existing?.dndSource ?? null,
+      dndAt:
+        input.dnd !== undefined ? now : (existing?.dndAt ?? null),
+      optedOutAt:
+        input.optedOut === true
+          ? now
+          : input.optedOut === false
+            ? null
+            : (existing?.optedOutAt ?? null),
+      optOutReason:
+        input.optedOut === true
+          ? (input.optOutReason ?? 'api_update')
+          : input.optedOut === false
+            ? null
+            : (existing?.optOutReason ?? null),
+      updatedAt: now,
+      createdAt: existing?.createdAt ?? now,
+    };
+
+    const rows = await db
+      .insert(callPreferences)
+      .values(values)
+      .onConflictDoUpdate({
+        target: callPreferences.phoneNumber,
+        set: {
+          consentStatus: values.consentStatus,
+          consentSource: values.consentSource,
+          consentAt: values.consentAt,
+          dnd: values.dnd,
+          dndSource: values.dndSource,
+          dndAt: values.dndAt,
+          optedOutAt: values.optedOutAt,
+          optOutReason: values.optOutReason,
+          updatedAt: now,
+        },
+      })
+      .returning();
+
+    if (values.optedOutAt || values.dnd) {
+      await this.addPhoneSuppression(
+        input.phoneNumber,
+        values.optOutReason ?? values.dndSource ?? 'preference_update',
+      );
+    }
+
+    return rows[0]!;
+  }
+
+  async recordExplicitOptOut(phoneNumber: string, reason: string): Promise<void> {
+    await this.upsertCallPreference({
+      phoneNumber,
+      optedOut: true,
+      optOutReason: reason,
+      dnd: true,
+      dndSource: 'owner_verbal_opt_out',
+    });
+    await this.addPhoneSuppression(phoneNumber, reason);
   }
 }
 
@@ -330,6 +616,17 @@ export async function safeUpsertDispatched(
     await getCallLogRepository().upsertDispatched(job, dispatch);
   } catch (error) {
     callWarn(`[CALL] call_log.dispatch_fail job=${job.jobId} error=${error}`);
+  }
+}
+
+export async function safeRecordExplicitOptOut(
+  phoneNumber: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await getCallLogRepository().recordExplicitOptOut(phoneNumber, reason);
+  } catch (error) {
+    callWarn(`[CALL] preference.opt_out_fail phone=${phoneNumber} error=${error}`);
   }
 }
 

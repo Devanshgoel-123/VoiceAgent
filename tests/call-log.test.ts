@@ -67,6 +67,11 @@ describe('summarizeUnclearCall', () => {
 
 describe('availability closing copy', () => {
   it('includes tenant follow-up on yes', () => {
-    expect(availabilityClosing('yes')).toContain('continue searching for tenants');
+    expect(
+      availabilityClosing('yes', 'en-IN', {
+        companyName: 'Galynest',
+        companyWebsite: 'galynest.com',
+      }),
+    ).toContain('continue searching for tenants');
   });
 });

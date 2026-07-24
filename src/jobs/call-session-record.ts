@@ -27,6 +27,7 @@ export class CallSessionRecord {
   private startedAt?: string;
   private roomName?: string;
   private dispatchId?: string;
+  private doNotCallReason?: string;
 
   constructor(metadata: CallMetadata) {
     this.jobId = String(metadata.job_id ?? 'unknown');
@@ -63,6 +64,10 @@ export class CallSessionRecord {
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void {
     this.ownerOutcome = outcome;
     this.summary = summary;
+  }
+
+  recordDoNotCall(reason: string): void {
+    this.doNotCallReason = reason;
   }
 
   finalize(report?: SessionReportLike | null): CallLogSnapshot {
@@ -102,7 +107,12 @@ export class CallSessionRecord {
       languages,
       transcript,
       transcriptSummary: summary,
-      metadata: { ...this.metadata },
+      metadata: {
+        ...this.metadata,
+        ...(this.doNotCallReason
+          ? { do_not_call: true, do_not_call_reason: this.doNotCallReason }
+          : {}),
+      },
       startedAt: this.startedAt,
       completedAt: new Date().toISOString(),
     };

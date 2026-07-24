@@ -1,5 +1,6 @@
 export interface PropertyPromptParams {
   companyName: string;
+  companyWebsite: string;
   callerName: string;
   propertyAddress: string;
   propertyType?: string;
@@ -30,9 +31,10 @@ WHEN YOU ARE INVOKED:
 - Reply in the same language they used (English, Hindi, or Kannada).
 - Keep it to one short sentence.
 - If they ask a direct question about the property (rent, BHK, address, city, type), answer briefly using ONLY the property details above, then steer back to availability.
-- If they ask something unrelated to this call, say you cannot help with that and suggest visiting gullynest.com to reach the team, then return to the availability question.
+- If they ask something unrelated to this call, say you cannot help with that and suggest visiting ${params.companyWebsite} to reach the team, then return to the availability question.
 - If they clearly answer yes or no, call recordPropertyAvailability.
-- After that tool, do NOT speak — the system plays the closing.
+- If they explicitly ask not to be called again, call recordDoNotCall, then do NOT speak — the system plays the closing.
+- After recordPropertyAvailability, do NOT speak — the system plays the closing.
 - If they switch language with a full sentence, call switchConversationLanguage once.
 - Never use the owner's name, "Sir", or "Madam".
 - Never invent a goodbye.
@@ -49,6 +51,8 @@ function formatProperty(params: PropertyPromptParams): string {
       `- Listed rent: ₹${params.rentAmount.toLocaleString('en-IN')}/month`,
     );
   }
-  parts.push(`- Listed by: ${params.companyName} (${params.callerName} is calling on their behalf)`);
+  parts.push(
+    `- Listed by: ${params.companyName} (${params.callerName} is calling on their behalf)`,
+  );
   return parts.join('\n');
 }

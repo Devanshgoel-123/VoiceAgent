@@ -13,9 +13,11 @@ import {
   safeMarkCallFailed,
   safeMarkCallInProgress,
   safeMarkCallNoAnswer,
+  safeRecordExplicitOptOut,
 } from '../db/call-log-repository.js';
 import { CallSessionRecord } from '../jobs/call-session-record.js';
 import { saveCallResultSnapshot } from '../jobs/persist-call-result.js';
+import { purgeExpiredCallData } from '../jobs/retention.js';
 import { safeAddPhoneSuppression } from '../jobs/suppression.js';
 import { callError, callInfo, callWarn } from './call-logger.js';
 import { registerProcessSafetyHandlers } from './process-safety.js';
@@ -106,6 +108,17 @@ export function createWorkerConfig(
             if (snapshot.ownerOutcome === 'no' && snapshot.phoneNumber) {
               await safeAddPhoneSuppression(snapshot.phoneNumber, 'owner_declined');
             }
+            if (snapshot.metadata.do_not_call && snapshot.phoneNumber) {
+              const reason =
+                typeof snapshot.metadata.do_not_call_reason === 'string'
+                  ? snapshot.metadata.do_not_call_reason
+                  : 'owner_verbal_opt_out';
+              await safeRecordExplicitOptOut(snapshot.phoneNumber, reason);
+            }
+            // Best-effort retention sweep (also run via `npm run db:purge-expired`).
+            void purgeExpiredCallData(settings.callDataRetentionDays).catch((error) => {
+              callWarn(`retention purge failed: ${error}`, logger);
+            });
           },
         });
 
@@ -147,6 +160,9 @@ export function createWorkerConfig(
                   {
                     companyName:
                       (effectiveMetadata.company_name as string) ?? settings.companyName,
+                    companyWebsite:
+                      (effectiveMetadata.company_website as string) ??
+                      settings.companyWebsite,
                     callerName:
                       (effectiveMetadata.caller_name as string) ?? settings.callerName,
                     propertyAddress:
@@ -207,6 +223,7 @@ function getConsoleTestMetadata(settings: Settings): CallMetadata {
     city: 'Bangalore',
     company_name: settings.companyName,
     caller_name: settings.callerName,
+    company_website: settings.companyWebsite,
     tts_provider: settings.ttsProvider,
   };
 }

@@ -2,19 +2,20 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import type { Settings } from '../config/settings.js';
 import { createApiKeyMiddleware } from './auth-middleware.js';
-import { propertyAvailabilityRequestSchema } from './schemas.js';
+import {
+  callPreferenceUpsertSchema,
+  propertyAvailabilityRequestSchema,
+} from './schemas.js';
 import { CallJobDispatcher } from '../jobs/dispatcher.js';
+import { secureDispatchPropertyAvailabilityCall } from '../jobs/dispatch-pipeline.js';
 import {
   createPropertyAvailabilityJob,
   type PropertyAvailabilityCallJob,
 } from '../jobs/models.js';
 import { CallResultStore } from '../jobs/results.js';
-import { isPhoneSuppressed } from '../jobs/suppression.js';
 import {
   getCallLogRepository,
   isDatabaseEnabled,
-  safeFindBlockingDispatch,
-  safeUpsertDispatched,
 } from '../db/call-log-repository.js';
 import { listAgents } from '../agents/registry.js';
 
@@ -72,25 +73,6 @@ export function createApp(
 
         const body = parsed.data;
 
-        if (await isPhoneSuppressed(body.phone_number)) {
-          res.status(403).json({ error: 'Phone number is on the do-not-call list' });
-          return;
-        }
-
-        const blocking = await safeFindBlockingDispatch({
-          propertyId: body.property_id,
-          phoneNumber: body.phone_number,
-          cooldownMs: settings.dispatchCooldownMs,
-        });
-        if (blocking) {
-          res.status(409).json({
-            error: 'A call for this property or phone number is already active or was placed recently',
-            existingJobId: blocking.jobId,
-            existingStatus: blocking.status,
-          });
-          return;
-        }
-
         const job: PropertyAvailabilityCallJob = createPropertyAvailabilityJob({
           owner: { name: body.owner_name, phoneNumber: body.phone_number },
           property: {
@@ -110,13 +92,115 @@ export function createApp(
               : {},
         });
 
-        const result = await dispatcher.dispatchPropertyAvailabilityCall(job);
-        await safeUpsertDispatched(job, result);
-        res.json(result);
+        const outcome = await secureDispatchPropertyAvailabilityCall(
+          job,
+          settings,
+          dispatcher,
+        );
+
+        if (!outcome.ok) {
+          const { failure } = outcome;
+          if (failure.kind === 'compliance') {
+            res.status(failure.status).json({
+              error: failure.error,
+              reason: failure.reason,
+            });
+            return;
+          }
+          if (failure.kind === 'conflict') {
+            res.status(failure.status).json({
+              error: failure.error,
+              existingJobId: failure.existingJobId,
+              existingStatus: failure.existingStatus,
+            });
+            return;
+          }
+          res.status(failure.status).json({ error: failure.error });
+          return;
+        }
+
+        res.json(outcome.result);
       } catch (error) {
         console.error('Failed to dispatch call job:', error);
         res.status(500).json({ error: String(error) });
       }
+    },
+  );
+
+  app.put('/calls/preferences', requireApiKey, callWriteLimiter, async (req, res) => {
+    try {
+      if (!isDatabaseEnabled()) {
+        res.status(503).json({ error: 'DATABASE_URL is required for call preferences' });
+        return;
+      }
+
+      const parsed = callPreferenceUpsertSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: 'Invalid request body',
+          details: parsed.error.flatten(),
+        });
+        return;
+      }
+
+      const body = parsed.data;
+      const row = await getCallLogRepository().upsertCallPreference({
+        phoneNumber: body.phone_number,
+        consentStatus: body.consent_status,
+        consentSource: body.consent_source,
+        dnd: body.dnd,
+        dndSource: body.dnd_source,
+        optedOut: body.opted_out,
+        optOutReason: body.opt_out_reason,
+      });
+
+      res.json({
+        phoneNumber: row.phoneNumber,
+        consentStatus: row.consentStatus,
+        consentSource: row.consentSource,
+        consentAt: row.consentAt?.toISOString() ?? null,
+        dnd: row.dnd,
+        dndSource: row.dndSource,
+        dndAt: row.dndAt?.toISOString() ?? null,
+        optedOutAt: row.optedOutAt?.toISOString() ?? null,
+        optOutReason: row.optOutReason,
+        updatedAt: row.updatedAt.toISOString(),
+      });
+    } catch (error) {
+      console.error('Failed to update call preferences:', error);
+      res.status(500).json({ error: String(error) });
+    }
+  });
+
+  app.get(
+    '/calls/preferences/:phoneNumber',
+    requireApiKey,
+    callReadLimiter,
+    async (req, res) => {
+      if (!isDatabaseEnabled()) {
+        res.status(503).json({ error: 'DATABASE_URL is required for call preferences' });
+        return;
+      }
+
+      const phone = decodeURIComponent(req.params.phoneNumber);
+      const row = await getCallLogRepository().getCallPreference(phone);
+      if (!row) {
+        res.status(404).json({ error: `No preferences found for ${phone}` });
+        return;
+      }
+
+      res.json({
+        phoneNumber: row.phoneNumber,
+        consentStatus: row.consentStatus,
+        consentSource: row.consentSource,
+        consentAt: row.consentAt?.toISOString() ?? null,
+        dnd: row.dnd,
+        dndSource: row.dndSource,
+        dndAt: row.dndAt?.toISOString() ?? null,
+        optedOutAt: row.optedOutAt?.toISOString() ?? null,
+        optOutReason: row.optOutReason,
+        updatedAt: row.updatedAt.toISOString(),
+      });
     },
   );
 

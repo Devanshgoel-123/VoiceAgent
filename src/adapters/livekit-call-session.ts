@@ -41,6 +41,8 @@ export interface CallLifecycle {
   setSpokenLanguage(language: LanguageCode, reason?: string): void;
   getCurrentLanguage(): LanguageCode;
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void;
+  /** Owner explicitly asked not to be called again. */
+  recordDoNotCall(reason: string): void;
 }
 
 export interface OpeningGreetingOptions {
@@ -205,6 +207,15 @@ export class LiveKitCallSession implements CallLifecycle {
 
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void {
     this.callRecord?.recordOwnerOutcome(outcome, summary);
+  }
+
+  recordDoNotCall(reason: string): void {
+    this.callRecord?.recordDoNotCall(reason);
+    this.callRecord?.recordOwnerOutcome(
+      'other',
+      `Owner opted out of future calls (${reason}).`,
+    );
+    callInfo(`opt-out: recorded reason="${truncateForLog(reason)}"`, this.logger);
   }
 
   scheduleHangup(outcome?: AvailabilityOutcome): void {
@@ -475,7 +486,10 @@ export class LiveKitCallSession implements CallLifecycle {
 
     try {
       const goodbyeText = this.availabilityOutcome
-        ? availabilityClosing(this.availabilityOutcome, language)
+        ? availabilityClosing(this.availabilityOutcome, language, {
+            companyName: getSettings().companyName,
+            companyWebsite: getSettings().companyWebsite,
+          })
         : goodbyeForLanguage(language);
 
       callInfo(

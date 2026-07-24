@@ -86,6 +86,7 @@ export function toDispatchMetadata(job: PropertyAvailabilityCallJob): Record<str
     rent_amount: job.property.rentAmount,
     city: job.property.city,
     company_name: job.companyName,
+    company_website: getSettings().companyWebsite,
     caller_name: job.callerName,
     preferred_language: job.preferredLanguage,
     ...job.metadata,

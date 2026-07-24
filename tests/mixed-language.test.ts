@@ -66,7 +66,10 @@ describe.each(scenarios)('mixed-language call: $name', (scenario) => {
 
     expect(manager.getCurrentLanguage()).toBe(scenario.expectedLastLanguage);
     expect(
-      availabilityClosing('yes', manager.getCurrentLanguage()),
+      availabilityClosing('yes', manager.getCurrentLanguage(), {
+        companyName: 'Galynest',
+        companyWebsite: 'galynest.com',
+      }),
     ).toContain(scenario.expectedClosingText);
   });
 
