@@ -313,6 +313,16 @@ npm run trigger:call -- \
   --tts-provider elevenlabs
 ```
 
+**Marketplace cron (fetch LIVE properties → dispatch):**
+
+Requires `VOICE_AGENT_API_BASE_URL`, `VOICE_AGENT_API_SECRET`, `DATABASE_URL`, and a running worker.
+
+```bash
+npm run cron:voice
+```
+
+Schedule that command externally (crontab / Render Cron). When each call finishes, the worker PATCHes `/api/voice-admin/properties/{id}/call-outcome` (yes→`available`, no→`stale`, otherwise→`soft_stale`). See [`voice-agent-api.md`](voice-agent-api.md).
+
 **Auth + rate-limit smoke (API already running):**
 
 ```bash
@@ -419,6 +429,13 @@ Each call is tracked in `call_logs` with:
 | `CALLING_HOURS_START_HOUR` / `CALLING_HOURS_END_HOUR` | No | Quiet-hours window (default 9–20) |
 | `CALLING_HOURS_TZ` | No | Time zone for calling hours (default `Asia/Kolkata`) |
 | `CALL_DATA_RETENTION_DAYS` | No | Days to keep transcripts in Postgres (default `15`) |
+| `VOICE_AGENT_API_BASE_URL` | For cron/outcomes | GullyNest marketplace host (no trailing slash) |
+| `VOICE_AGENT_API_SECRET` | For cron/outcomes | Shared `X-Voice-Admin-Secret` |
+| `VOICE_CRON_MAX_DISPATCH` | No | Max dispatches per cron run (default `50`) |
+| `VOICE_CRON_CONCURRENCY` | No | Parallel dispatches (default `3`) |
+| `VOICE_CRON_RECONTACT_DAYS` | No | Skip recently contacted listings (default `7`) |
+| `VOICE_CRON_LISTING_KIND` | No | Optional filter, e.g. `OWNER,AGENT` |
+| `VOICE_CRON_STATUS` | No | Property status filter (default `LIVE`) |
 
 ### Logging
 
@@ -436,6 +453,7 @@ Each call is tracked in `call_logs` with:
 | `npm run console:worker` | Terminal test (no phone) |
 | `npm run dev:api` | Express trigger API |
 | `npm run trigger:call` | CLI dispatch |
+| `npm run cron:voice` | Fetch GullyNest properties and dispatch calls |
 | `npm run test:api:smoke` | Auth + preferences smoke against local API |
 | `npm run db:push` | Push Drizzle schema to Postgres |
 | `npm run db:generate` | Generate SQL migrations from schema |

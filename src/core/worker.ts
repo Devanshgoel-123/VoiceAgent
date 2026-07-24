@@ -15,6 +15,11 @@ import {
   safeMarkCallNoAnswer,
   safeRecordExplicitOptOut,
 } from '../db/call-log-repository.js';
+import { createGullyNestClientFromSettings } from '../integrations/gullynest/client.js';
+import {
+  mapSnapshotToCallOutcomeAction,
+  shouldReportCallOutcome,
+} from '../integrations/gullynest/outcome-map.js';
 import { CallSessionRecord } from '../jobs/call-session-record.js';
 import { saveCallResultSnapshot } from '../jobs/persist-call-result.js';
 import { purgeExpiredCallData } from '../jobs/retention.js';
@@ -115,6 +120,24 @@ export function createWorkerConfig(
                   : 'owner_verbal_opt_out';
               await safeRecordExplicitOptOut(snapshot.phoneNumber, reason);
             }
+
+            const gullyClient = createGullyNestClientFromSettings(settings);
+            if (gullyClient && shouldReportCallOutcome(snapshot) && snapshot.propertyId) {
+              const action = mapSnapshotToCallOutcomeAction(snapshot);
+              try {
+                await gullyClient.reportCallOutcome(snapshot.propertyId, action);
+                callInfo(
+                  `gullynest outcome reported property=${snapshot.propertyId} action=${action}`,
+                  logger,
+                );
+              } catch (error) {
+                callWarn(
+                  `gullynest outcome report failed property=${snapshot.propertyId}: ${error}`,
+                  logger,
+                );
+              }
+            }
+
             // Best-effort retention sweep (also run via `npm run db:purge-expired`).
             void purgeExpiredCallData(settings.callDataRetentionDays).catch((error) => {
               callWarn(`retention purge failed: ${error}`, logger);
