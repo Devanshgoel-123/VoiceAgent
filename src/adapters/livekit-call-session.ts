@@ -6,18 +6,19 @@ import {
   HANGUP_DEFER_MS,
   OUTBOUND_ENDPOINTING_MIN_MS,
   OWNER_OPENING_WAIT_MS,
+  OWNER_RESPONSE_TIMEOUT_MS,
   TURN_COMMIT_FALLBACK_MS,
 } from '../config/call-config.js';
 import { getSettings } from '../config/settings.js';
-import { callError, callInfo, callWarn } from '../core/call-logger.js';
+import { callDebug, callError, callInfo, callWarn } from '../core/call-logger.js';
+import { fireAndForget } from '../core/process-safety.js';
 import {
   LanguageManager,
   type LanguageCode,
 } from '../core/language-manager.js';
-import { safeCompleteCallLog } from '../db/call-log-repository.js';
 import type { OwnerOutcome } from '../jobs/call-log-types.js';
+import type { CallLogSnapshot } from '../jobs/call-log-types.js';
 import { CallSessionRecord } from '../jobs/call-session-record.js';
-import { saveCallResultSnapshot } from '../jobs/persist-call-result.js';
 import {
   availabilityClosing,
   goodbyeForLanguage,
@@ -56,6 +57,8 @@ export interface LiveKitCallSessionOptions {
   participantIdentity?: string;
   callRecord?: CallSessionRecord;
   logger?: ReturnType<typeof log>;
+  /** Composition root persists call results after the session closes. */
+  onPersist?: (snapshot: CallLogSnapshot) => Promise<void>;
 }
 
 /** One outbound call: AgentSession lifecycle, language, greeting, hangup, persist. */
@@ -66,6 +69,7 @@ export class LiveKitCallSession implements CallLifecycle {
   private readonly participantIdentity?: string;
   private readonly pipeline: VoicePipelineBundle;
   private readonly callRecord?: CallSessionRecord;
+  private readonly onPersist?: (snapshot: CallLogSnapshot) => Promise<void>;
   private readonly languageManager = new LanguageManager('en-IN');
 
   private session?: voice.AgentSession;
@@ -73,7 +77,6 @@ export class LiveKitCallSession implements CallLifecycle {
   private hangupStarted = false;
   private roomDeleted = false;
   private closeResolved = false;
-  private persistStarted = false;
   private availabilityOutcome?: AvailabilityOutcome;
   private resolveClose?: () => void;
   private closePromise?: Promise<void>;
@@ -85,6 +88,9 @@ export class LiveKitCallSession implements CallLifecycle {
   private openingBuildText?: (language: LanguageCode) => string;
   private preferredOpeningLanguage: LanguageCode = 'en-IN';
   private appliedTtsLanguage: LanguageCode | null = null;
+  private ownerResponseTimer?: ReturnType<typeof setTimeout>;
+  private sessionErrorCount = 0;
+  private ownerRespondedAfterOpening = false;
 
   constructor(options: LiveKitCallSessionOptions) {
     this.ctx = options.jobContext;
@@ -93,6 +99,7 @@ export class LiveKitCallSession implements CallLifecycle {
     this.participantIdentity = options.participantIdentity;
     this.pipeline = options.pipeline;
     this.callRecord = options.callRecord;
+    this.onPersist = options.onPersist;
   }
 
   createSession(): voice.AgentSession {
@@ -206,7 +213,11 @@ export class LiveKitCallSession implements CallLifecycle {
     this.hangupScheduled = true;
     this.clearOpeningGreeting();
     callInfo(`hangup: scheduled outcome=${outcome ?? 'none'}`, this.logger);
-    setTimeout(() => void this.playGoodbyeAndHangup(), HANGUP_DEFER_MS);
+    setTimeout(
+      () =>
+        fireAndForget('playGoodbyeAndHangup', () => this.playGoodbyeAndHangup(), this.logger),
+      HANGUP_DEFER_MS,
+    );
   }
 
   waitUntilClosed(): Promise<void> {
@@ -232,6 +243,37 @@ export class LiveKitCallSession implements CallLifecycle {
       });
     } catch (error) {
       callError(`opening say failed: ${error}`, this.logger);
+    }
+
+    this.armOwnerResponseTimeout();
+  }
+
+  private armOwnerResponseTimeout(): void {
+    if (!this.isOutboundCall || !this.openingGreeted) return;
+    this.clearOwnerResponseTimeout();
+
+    this.ownerResponseTimer = setTimeout(() => {
+      this.ownerResponseTimer = undefined;
+      if (
+        this.hangupScheduled ||
+        this.hangupStarted ||
+        this.ownerRespondedAfterOpening
+      ) {
+        return;
+      }
+      callInfo('owner-response: timeout after opening (inconclusive)', this.logger);
+      this.recordOwnerOutcome(
+        'unclear',
+        'No clear owner response after opening (timeout).',
+      );
+      this.scheduleHangup();
+    }, OWNER_RESPONSE_TIMEOUT_MS);
+  }
+
+  private clearOwnerResponseTimeout(): void {
+    if (this.ownerResponseTimer) {
+      clearTimeout(this.ownerResponseTimer);
+      this.ownerResponseTimer = undefined;
     }
   }
 
@@ -269,6 +311,7 @@ export class LiveKitCallSession implements CallLifecycle {
       this.openingTimer = undefined;
     }
     this.openingArmed = false;
+    this.clearOwnerResponseTimeout();
   }
 
   private attachSessionEvents(session: voice.AgentSession): void {
@@ -298,11 +341,17 @@ export class LiveKitCallSession implements CallLifecycle {
       if (!text) return;
       const who =
         item.role === 'user' ? 'owner' : item.role === 'assistant' ? 'agent' : item.role;
-      callInfo(`${who}: ${text}`, this.logger);
+      callDebug(`${who}: ${text}`, this.logger);
     });
 
     session.on(voice.AgentSessionEventTypes.Error, (ev) => {
+      this.sessionErrorCount += 1;
       callError('session error', this.logger, { error: ev.error });
+      if (this.hangupScheduled || this.hangupStarted) return;
+
+      const message = String(ev.error);
+      this.callRecord?.markFailed(`Session provider error: ${message}`);
+      this.scheduleHangup();
     });
 
     session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
@@ -344,6 +393,11 @@ export class LiveKitCallSession implements CallLifecycle {
 
       if (!ev.isFinal) return;
 
+      if (this.openingGreeted) {
+        this.ownerRespondedAfterOpening = true;
+        this.clearOwnerResponseTimeout();
+      }
+
       // Opening window: owner spoke first → scripted intro in their language (no LLM).
       if ((this.openingArmed || this.pendingOwnerLanguageGreeting) && !this.openingGreeted) {
         if (this.openingArmed) {
@@ -384,7 +438,7 @@ export class LiveKitCallSession implements CallLifecycle {
     return new Promise<void>((resolve) => {
       this.resolveClose = resolve;
       session.on(voice.AgentSessionEventTypes.Close, (ev) => {
-        void this.finalizeHangup(String(ev.reason));
+        fireAndForget('finalizeHangup', () => this.finalizeHangup(String(ev.reason)), this.logger);
       });
     });
   }
@@ -454,7 +508,11 @@ export class LiveKitCallSession implements CallLifecycle {
 
     setTimeout(() => {
       if (this.closeResolved && this.roomDeleted) return;
-      void this.finalizeHangup('close_fallback_timeout');
+      fireAndForget(
+        'finalizeHangup:fallback',
+        () => this.finalizeHangup('close_fallback_timeout'),
+        this.logger,
+      );
     }, CLOSE_FALLBACK_TIMEOUT_MS);
   }
 
@@ -474,29 +532,17 @@ export class LiveKitCallSession implements CallLifecycle {
     try {
       const session = this.session;
       const report = session ? this.ctx.makeSessionReport(session) : undefined;
-      await this.persistCallLog(report);
+      const snapshot = this.callRecord?.finalize(report ?? null);
+      if (snapshot && this.onPersist) {
+        await this.onPersist(snapshot);
+      }
     } catch (error) {
-      callWarn(`session report failed: ${error}`, this.logger);
+      callWarn(`session persist failed: ${error}`, this.logger);
     }
 
     const jobCtx = getJobContext(false) ?? this.ctx;
     jobCtx.shutdown(reason);
     this.resolveClose?.();
-  }
-
-  private async persistCallLog(
-    report?: ReturnType<JobContext['makeSessionReport']>,
-  ): Promise<void> {
-    if (this.persistStarted || !this.callRecord) return;
-    this.persistStarted = true;
-
-    const snapshot = this.callRecord.finalize(report ?? null);
-    await safeCompleteCallLog(snapshot);
-    try {
-      await saveCallResultSnapshot(snapshot);
-    } catch (error) {
-      callWarn(`file snapshot failed job=${snapshot.jobId}: ${error}`, this.logger);
-    }
   }
 
   private requireSession(): voice.AgentSession {

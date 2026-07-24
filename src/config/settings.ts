@@ -2,6 +2,7 @@ import 'dotenv/config';
 
 export type TtsProvider = 'sarvam' | 'elevenlabs';
 export type ElevenLabsTransport = 'http' | 'websocket';
+export type AppEnv = 'developer' | 'production';
 
 export interface Settings {
   livekitUrl: string;
@@ -19,12 +20,16 @@ export interface Settings {
   agentName: string;
   apiHost: string;
   apiPort: number;
+  apiSecretKey: string;
   companyName: string;
   callerName: string;
   databaseUrl?: string;
   llmModel: string;
   defaultLanguage: string;
   telephonySampleRate: number;
+  dispatchCooldownMs: number;
+  appEnv: AppEnv;
+  callDebugLogging: boolean;
 }
 
 function parseTtsProvider(raw: string | undefined): TtsProvider {
@@ -57,6 +62,24 @@ function parseTtsSpeed(raw: string | undefined): number {
   return Math.min(2, Math.max(0.5, parsed));
 }
 
+function parseAppEnv(raw: string | undefined): AppEnv {
+  return raw?.trim().toLowerCase() === 'production' ? 'production' : 'developer';
+}
+
+function parseBoolean(raw: string | undefined): boolean | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = raw.trim().toLowerCase();
+  if (value === 'true' || value === '1' || value === 'yes') return true;
+  if (value === 'false' || value === '0' || value === 'no') return false;
+  return undefined;
+}
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
 let cachedSettings: Settings | null = null;
 
 export function getSettings(): Settings {
@@ -67,6 +90,10 @@ export function getSettings(): Settings {
     if (!value) throw new Error(`Missing required environment variable: ${key}`);
     return value;
   };
+
+  const appEnv = parseAppEnv(process.env.APP_ENV);
+  const callDebugLogging =
+    parseBoolean(process.env.CALL_DEBUG_LOGGING) ?? appEnv === 'developer';
 
   cachedSettings = {
     livekitUrl: required('LIVEKIT_URL'),
@@ -80,17 +107,29 @@ export function getSettings(): Settings {
     elevenLabsTransport: parseElevenLabsTransport(process.env.ELEVENLABS_TRANSPORT),
     ttsVolume: parseTtsVolume(process.env.TTS_VOLUME),
     ttsSpeed: parseTtsSpeed(process.env.TTS_SPEED),
-    sipOutboundTrunkId: process.env.SIP_OUTBOUND_TRUNK_ID ?? '',
+    sipOutboundTrunkId: required('SIP_OUTBOUND_TRUNK_ID'),
     agentName: process.env.AGENT_NAME ?? 'gully-property-availability-agent',
     apiHost: process.env.API_HOST ?? '0.0.0.0',
     apiPort: Number(process.env.API_PORT ?? '8080'),
+    apiSecretKey: required('API_SECRET_KEY'),
     companyName: process.env.COMPANY_NAME ?? 'Galynest',
     callerName: process.env.CALLER_NAME?.trim() || 'Aditi',
     databaseUrl: process.env.DATABASE_URL?.trim() || undefined,
-    llmModel: 'sarvam-105b',
-    defaultLanguage: 'en-IN',
-    telephonySampleRate: 8000,
+    llmModel: process.env.LLM_MODEL ?? 'sarvam-105b',
+    defaultLanguage: process.env.DEFAULT_LANGUAGE ?? 'en-IN',
+    telephonySampleRate: parsePositiveInt(process.env.TELEPHONY_SAMPLE_RATE, 8000),
+    dispatchCooldownMs: parsePositiveInt(
+      process.env.DISPATCH_COOLDOWN_MS,
+      86_400_000,
+    ),
+    appEnv,
+    callDebugLogging,
   };
 
   return cachedSettings;
+}
+
+/** Whether verbose transcript / turn logging should be emitted. */
+export function isVerboseCallLogging(): boolean {
+  return getSettings().callDebugLogging;
 }

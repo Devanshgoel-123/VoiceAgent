@@ -18,9 +18,10 @@ interface PropertyWorkflowState {
 }
 
 function createWorkflowState(metadata: CallMetadata): PropertyWorkflowState {
+  const settings = getSettings();
   return {
     jobId: (metadata.job_id as string) ?? 'unknown',
-    companyName: (metadata.company_name as string) ?? 'Galynest',
+    companyName: (metadata.company_name as string) ?? settings.companyName,
     callMetadata: metadata,
     propertyAvailable: 'not_asked',
     outcomeRecorded: false,
@@ -83,7 +84,7 @@ function recordAvailabilityOutcome(
   );
 }
 
-function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: CallLifecycle) {
+export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: CallLifecycle) {
   return {
     recordPropertyAvailability: llm.tool({
       description:

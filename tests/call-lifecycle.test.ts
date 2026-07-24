@@ -143,10 +143,16 @@ describe('SarvamVoicePipeline', () => {
   it('creates a bundle with stt/llm/tts', async () => {
     vi.resetModules();
 
-    try {
-      const { getSettings } = await import('../src/config/settings.js');
-      getSettings();
-    } catch {
+    const hasEnv =
+      process.env.LIVEKIT_URL &&
+      process.env.LIVEKIT_API_KEY &&
+      process.env.LIVEKIT_API_SECRET &&
+      process.env.SARVAM_API_KEY &&
+      process.env.SIP_OUTBOUND_TRUNK_ID &&
+      process.env.API_SECRET_KEY;
+
+    if (!hasEnv) {
+      console.warn('Skipping SarvamVoicePipeline test — required env vars not set');
       return;
     }
 

@@ -16,7 +16,7 @@ export class CallJobDispatcher {
     roomName?: string,
   ): Promise<DispatchResult> {
     const room =
-      roomName ?? `property-call-${job.property.propertyId}-${crypto.randomUUID().slice(0, 8)}`;
+      roomName ?? `property-call-${job.property.propertyId}-${crypto.randomUUID()}`;
     const metadata = toDispatchMetadata(job);
 
     const dispatchClient = new AgentDispatchClient(
