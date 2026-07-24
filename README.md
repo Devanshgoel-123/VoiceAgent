@@ -275,11 +275,15 @@ npm run dev:api
 
 ### 6. Trigger an outbound call
 
+All `/calls/*` routes require `API_SECRET_KEY` via `Authorization: Bearer …` or `x-api-key`.
+
 **Via API:**
 
 ```bash
+# load API_SECRET_KEY from .env, then:
 curl -X POST http://localhost:8080/calls/property-availability \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_SECRET_KEY" \
   -d '{
     "owner_name": "Ramesh Kumar",
     "caller_name": "Jitesh",
@@ -309,10 +313,31 @@ npm run trigger:call -- \
   --tts-provider elevenlabs
 ```
 
+**Auth + rate-limit smoke (API already running):**
+
+```bash
+npm run test:api:smoke
+# optional: lower limits in .env, restart API, then:
+TEST_RATE_LIMIT=1 API_WRITE_RATE_LIMIT_PER_MINUTE=3 npm run test:api:smoke
+```
+
+**Preferences (consent / DND):**
+
+```bash
+curl -X PUT http://localhost:8080/calls/preferences \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $API_SECRET_KEY" \
+  -d '{"phone_number":"+919876543210","consent_status":"granted","consent_source":"dev"}'
+
+curl http://localhost:8080/calls/preferences/%2B919876543210 \
+  -H "Authorization: Bearer $API_SECRET_KEY"
+```
+
 ### 7. Fetch call result
 
 ```bash
-curl http://localhost:8080/calls/results/{job_id}
+curl http://localhost:8080/calls/results/{job_id} \
+  -H "Authorization: Bearer $API_SECRET_KEY"
 ```
 
 ### 8. Call logging (Postgres + Drizzle)
@@ -387,6 +412,13 @@ Each call is tracked in `call_logs` with:
 | `COMPANY_NAME` | No | Brand name (default: `Galynest`) |
 | `CALLER_NAME` | No | Spoken caller name (default: `Jitesh`); API `caller_name` can override it per call |
 | `API_HOST` / `API_PORT` | No | Trigger API bind address |
+| `API_SECRET_KEY` | Yes (API) | Bearer / `x-api-key` secret for `/calls/*` |
+| `API_WRITE_RATE_LIMIT_PER_MINUTE` | No | Write limit per IP (default `30`) |
+| `API_READ_RATE_LIMIT_PER_MINUTE` | No | Read limit per IP (default `60`) |
+| `DISPATCH_COOLDOWN_MS` | No | Min ms between same property+phone (default 24h) |
+| `CALLING_HOURS_START_HOUR` / `CALLING_HOURS_END_HOUR` | No | Quiet-hours window (default 9–20) |
+| `CALLING_HOURS_TZ` | No | Time zone for calling hours (default `Asia/Kolkata`) |
+| `CALL_DATA_RETENTION_DAYS` | No | Days to keep transcripts in Postgres (default `15`) |
 
 ### Logging
 
@@ -404,8 +436,10 @@ Each call is tracked in `call_logs` with:
 | `npm run console:worker` | Terminal test (no phone) |
 | `npm run dev:api` | Express trigger API |
 | `npm run trigger:call` | CLI dispatch |
+| `npm run test:api:smoke` | Auth + preferences smoke against local API |
 | `npm run db:push` | Push Drizzle schema to Postgres |
 | `npm run db:generate` | Generate SQL migrations from schema |
+| `npm run db:migrate` | Apply SQL migrations |
 | `npm test` | Unit tests |
 | `npm run typecheck` | TypeScript check |
 
