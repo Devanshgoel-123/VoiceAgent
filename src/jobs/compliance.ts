@@ -1,10 +1,7 @@
 import type { Settings } from '../config/settings.js';
-import type { CallPreferenceRow } from '../db/schema.js';
 
 export type ComplianceBlockReason =
   | 'outside_calling_hours'
-  | 'dnd'
-  | 'opted_out'
   | 'suppressed'
   | 'database_required';
 
@@ -47,10 +44,7 @@ export function isWithinCallingHours(
   return hour >= start || hour < end;
 }
 
-export function evaluateCallPreferences(
-  preference: CallPreferenceRow | null,
-  isSuppressed: boolean,
-): ComplianceDecision {
+export function evaluateCallSuppression(isSuppressed: boolean): ComplianceDecision {
   if (isSuppressed) {
     return {
       allowed: false,
@@ -58,30 +52,11 @@ export function evaluateCallPreferences(
       detail: 'Phone number is on the do-not-call / suppression list',
     };
   }
-
-  if (preference?.optedOutAt) {
-    return {
-      allowed: false,
-      reason: 'opted_out',
-      detail: preference.optOutReason ?? 'Owner explicitly opted out',
-    };
-  }
-
-  if (preference?.dnd) {
-    return {
-      allowed: false,
-      reason: 'dnd',
-      detail: 'Phone number is marked DND',
-    };
-  }
-
-  // Compatible policy: consent is optional — unknown/granted both allow.
   return { allowed: true };
 }
 
 export function evaluateDispatchCompliance(input: {
   settings: Settings;
-  preference: CallPreferenceRow | null;
   isSuppressed: boolean;
   now?: Date;
 }): ComplianceDecision {
@@ -93,5 +68,5 @@ export function evaluateDispatchCompliance(input: {
     };
   }
 
-  return evaluateCallPreferences(input.preference, input.isSuppressed);
+  return evaluateCallSuppression(input.isSuppressed);
 }

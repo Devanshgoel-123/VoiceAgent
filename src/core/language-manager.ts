@@ -65,6 +65,10 @@ export class LanguageManager {
     const trimmed = transcript.trim();
     if (!trimmed) return null;
 
+    // Explicit "speak in English/Hindi/Kannada" wins over STT guesses.
+    const explicit = LanguageManager.detectExplicitLanguageRequest(trimmed);
+    if (explicit) return explicit;
+
     if (LanguageManager.isShortYesNo(trimmed)) {
       return null;
     }
@@ -83,16 +87,54 @@ export class LanguageManager {
       return fromKeywords;
     }
 
-    if (fromStt && fromStt !== this.currentLanguage) {
-      // Trust STT only when the utterance is long enough to be a real switch.
-      const tokenCount = (trimmed.match(/\p{L}+/gu) ?? []).length;
-      if (tokenCount >= 3 || fromScript === 'en-IN') {
-        return fromStt;
-      }
-    }
-
+    // Switch to English when the utterance is clearly Latin / English.
     if (fromScript === 'en-IN' && (trimmed.match(/\p{L}+/gu) ?? []).length >= 3) {
       return 'en-IN';
+    }
+
+    // Do not switch to Hindi/Kannada from STT alone — that causes false flaps.
+    // Only allow STT to confirm English when script already looks English.
+    if (
+      fromStt === 'en-IN' &&
+      fromScript === 'en-IN' &&
+      fromStt !== this.currentLanguage
+    ) {
+      const tokenCount = (trimmed.match(/\p{L}+/gu) ?? []).length;
+      if (tokenCount >= 3) return 'en-IN';
+    }
+
+    return null;
+  }
+
+  /**
+   * Detect an explicit request to change language ("please speak in English").
+   */
+  static detectExplicitLanguageRequest(text: string): LanguageCode | null {
+    const normalized = text.trim().toLowerCase();
+    if (!normalized) return null;
+
+    if (
+      /\b(in|to|speak|talk|switch(?:\s+to)?)\s+english\b/.test(normalized) ||
+      /\benglish\s+please\b/.test(normalized) ||
+      /\bplease\s+(speak|talk)\s+english\b/.test(normalized)
+    ) {
+      return 'en-IN';
+    }
+
+    if (
+      /\b(in|to|speak|talk|switch(?:\s+to)?)\s+hindi\b/.test(normalized) ||
+      /\bhindi\s+please\b/.test(normalized) ||
+      /हिंदी|हिन्दी/.test(text)
+    ) {
+      return 'hi-IN';
+    }
+
+    if (
+      /\b(in|to|speak|talk|switch(?:\s+to)?)\s+kannada\b/.test(normalized) ||
+      /\bkannada\s+please\b/.test(normalized) ||
+      /ಕನ್ನಡ/.test(text)
+    ) {
+      return 'kn-IN';
     }
 
     return null;
@@ -224,11 +266,10 @@ export class LanguageManager {
   private matchesKeywordSets(text: string, keywordMap: Record<string, Set<string>>): boolean {
     const tokens = new Set(text.match(/\p{L}+/gu) ?? []);
     for (const keywords of Object.values(keywordMap)) {
-      for (const token of tokens) {
-        if (keywords.has(token)) return true;
-      }
       for (const keyword of keywords) {
-        if (text.includes(keyword)) return true;
+        if (tokens.has(keyword)) return true;
+        // Native-script keywords may not always tokenize cleanly.
+        if (/[^\u0000-\u007f]/.test(keyword) && text.includes(keyword)) return true;
       }
     }
     return false;
