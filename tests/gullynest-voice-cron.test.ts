@@ -9,7 +9,7 @@ import {
 } from '../src/integrations/gullynest/outcome-map.js';
 import type { CallLogSnapshot } from '../src/jobs/call-log-types.js';
 import type { Settings } from '../src/config/settings.js';
-import { propertyToJobInput, runVoiceCron } from '../src/jobs/voice-cron.js';
+import { propertyToJobInput, runVoiceCronTick } from '../src/jobs/voice-cron.js';
 import type { VoiceAdminProperty } from '../src/integrations/gullynest/types.js';
 
 function snapshot(
@@ -92,20 +92,13 @@ describe('GullyNestClient', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
 
-    await client.listProperties({
-      status: 'LIVE',
-      listingKind: 'OWNER,AGENT',
-      contactedBefore: '2026-07-17T00:00:00.000Z',
-      page: 2,
-      pageSize: 100,
-    });
+    await client.listProperties({ page: 2, pageSize: 100 });
 
     expect(fetchImpl).toHaveBeenCalledOnce();
     const [url, init] = fetchImpl.mock.calls[0]!;
-    expect(String(url)).toContain('https://example.com/api/voice-admin/properties?');
-    expect(String(url)).toContain('status=LIVE');
-    expect(String(url)).toContain('listingKind=OWNER%2CAGENT');
-    expect(String(url)).toContain('page=2');
+    expect(String(url)).toBe(
+      'https://example.com/api/voice-admin/properties?page=2&pageSize=100',
+    );
     expect((init as RequestInit).headers).toMatchObject({
       'X-Voice-Admin-Secret': 'secret-123',
     });
@@ -185,15 +178,10 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     callingHoursEndHour: 24,
     callingHoursTimeZone: 'UTC',
     callDataRetentionDays: 15,
-    apiWriteRateLimitPerMinute: 30,
     apiReadRateLimitPerMinute: 60,
     voiceAgentApiBaseUrl: 'https://example.com',
     voiceAgentApiSecret: 'secret',
-    voiceCronPageSize: 50,
-    voiceCronMaxDispatch: 2,
-    voiceCronConcurrency: 2,
-    voiceCronRecontactDays: 7,
-    voiceCronStatus: 'LIVE',
+    voiceCronIntervalMs: 900_000,
     appEnv: 'developer',
     callDebugLogging: false,
     databaseUrl: 'postgresql://example',
@@ -242,8 +230,8 @@ describe('propertyToJobInput', () => {
   });
 });
 
-describe('runVoiceCron', () => {
-  it('skips properties without phone and respects max dispatch', async () => {
+describe('runVoiceCronTick', () => {
+  it('dispatches each callable property from the API response', async () => {
     const listAllProperties = vi.fn(async () => [
       property({ id: 'a', listerPhone: null }),
       property({ id: 'b', shortId: '1' }),
@@ -252,12 +240,6 @@ describe('runVoiceCron', () => {
         shortId: '2',
         listerPhone: '+919111111111',
         listerName: 'Sita',
-      }),
-      property({
-        id: 'd',
-        shortId: '3',
-        listerPhone: '+919222222222',
-        listerName: 'Amit',
       }),
     ]);
 
@@ -273,15 +255,12 @@ describe('runVoiceCron', () => {
       },
     }));
 
-    const summary = await runVoiceCron(baseSettings({ voiceCronMaxDispatch: 2 }), {
+    const summary = await runVoiceCronTick(baseSettings(), {
       client: { listAllProperties } as never,
       dispatch,
-      now: () => new Date('2026-07-24T12:00:00.000Z'),
     });
 
-    expect(listAllProperties).toHaveBeenCalledOnce();
-    const query = listAllProperties.mock.calls[0]![0];
-    expect(query.contactedBefore).toBe('2026-07-17T12:00:00.000Z');
+    expect(listAllProperties).toHaveBeenCalledWith();
     expect(summary.skipped).toBe(1);
     expect(summary.dispatched).toBe(2);
     expect(summary.failed).toBe(0);
@@ -303,7 +282,7 @@ describe('runVoiceCron', () => {
       },
     }));
 
-    const summary = await runVoiceCron(baseSettings(), {
+    const summary = await runVoiceCronTick(baseSettings(), {
       client: { listAllProperties } as never,
       dispatch,
     });

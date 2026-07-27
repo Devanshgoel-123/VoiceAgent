@@ -36,7 +36,7 @@ export type SecureDispatchResult =
   | { ok: false; failure: SecureDispatchFailure };
 
 /**
- * Fail-closed dispatch: requires DB, enforces quiet hours + preferences,
+ * Fail-closed dispatch: requires DB, enforces quiet hours + suppression,
  * atomically reserves (property_id, phone_number), then creates LiveKit dispatch.
  */
 export async function secureDispatchPropertyAvailabilityCall(
@@ -58,10 +58,8 @@ export async function secureDispatchPropertyAvailabilityCall(
 
   const repo = getCallLogRepository();
 
-  let preference;
   let suppressed: boolean;
   try {
-    preference = await repo.getCallPreference(job.owner.phoneNumber);
     suppressed = await repo.isPhoneSuppressed(job.owner.phoneNumber);
   } catch (error) {
     return {
@@ -76,7 +74,6 @@ export async function secureDispatchPropertyAvailabilityCall(
 
   const compliance = evaluateDispatchCompliance({
     settings,
-    preference,
     isSuppressed: suppressed,
   });
   if (!compliance.allowed) {

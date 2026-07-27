@@ -22,15 +22,3 @@ export const propertyAvailabilityRequestSchema = z.object({
 export type PropertyAvailabilityRequest = z.infer<
   typeof propertyAvailabilityRequestSchema
 >;
-
-export const callPreferenceUpsertSchema = z.object({
-  phone_number: e164Phone,
-  consent_status: z.enum(['unknown', 'granted', 'denied']).optional(),
-  consent_source: z.string().trim().optional(),
-  dnd: z.boolean().optional(),
-  dnd_source: z.string().trim().optional(),
-  opted_out: z.boolean().optional(),
-  opt_out_reason: z.string().trim().optional(),
-});
-
-export type CallPreferenceUpsertRequest = z.infer<typeof callPreferenceUpsertSchema>;
