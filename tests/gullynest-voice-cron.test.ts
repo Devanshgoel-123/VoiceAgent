@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { VOICE_CRON_PROPERTY_STATUSES } from '../src/config/call-config.js';
 import {
   GullyNestApiError,
   GullyNestClient,
@@ -10,7 +11,9 @@ import {
 import type { CallLogSnapshot } from '../src/jobs/call-log-types.js';
 import type { Settings } from '../src/config/settings.js';
 import {
+  CALLABLE_VOICE_STATUSES,
   fetchCallableVoiceProperties,
+  isCallableVoiceStatus,
   propertyToJobInput,
   runVoiceCronTick,
   voiceContactedBeforeCutoff,
@@ -237,6 +240,58 @@ describe('propertyToJobInput', () => {
   });
 });
 
+describe('voice cron property status filters', () => {
+  const now = new Date('2026-07-27T12:00:00.000Z');
+
+  it('configures LIVE and SOFT_STALE for cron fetches', () => {
+    expect([...VOICE_CRON_PROPERTY_STATUSES]).toEqual(['LIVE', 'SOFT_STALE']);
+    expect([...CALLABLE_VOICE_STATUSES]).toEqual(['LIVE', 'SOFT_STALE']);
+  });
+
+  it('only treats LIVE and SOFT_STALE as callable', () => {
+    expect(isCallableVoiceStatus('LIVE')).toBe(true);
+    expect(isCallableVoiceStatus('SOFT_STALE')).toBe(true);
+    expect(isCallableVoiceStatus('STALE')).toBe(false);
+  });
+
+  it('always passes an explicit status to GullyNest (never relies on LIVE default)', async () => {
+    const listAllProperties = vi.fn(async () => []);
+
+    await fetchCallableVoiceProperties({ listAllProperties } as never, now);
+
+    expect(listAllProperties).toHaveBeenCalledTimes(VOICE_CRON_PROPERTY_STATUSES.length);
+    for (const call of listAllProperties.mock.calls) {
+      const query = call[0] as { status?: string; contactedBefore?: string };
+      expect(query.status).toBeDefined();
+      expect(['LIVE', 'SOFT_STALE']).toContain(query.status);
+      expect(query.contactedBefore).toBe('2026-07-20T12:00:00.000Z');
+    }
+    expect(
+      listAllProperties.mock.calls.map((call) => (call[0] as { status: string }).status),
+    ).toEqual(['LIVE', 'SOFT_STALE']);
+  });
+
+  it('drops STALE rows even if the API returns them', async () => {
+    const listAllProperties = vi.fn(async (query) => {
+      if (query.status === 'LIVE') {
+        return [property({ id: 'live-1' })];
+      }
+      return [
+        property({ id: 'soft-1', status: 'SOFT_STALE' }),
+        property({ id: 'stale-1', status: 'STALE' }),
+      ];
+    });
+
+    const properties = await fetchCallableVoiceProperties(
+      { listAllProperties } as never,
+      now,
+    );
+
+    expect(properties.map((p) => p.id).sort()).toEqual(['live-1', 'soft-1']);
+    expect(properties.some((p) => p.status === 'STALE')).toBe(false);
+  });
+});
+
 describe('voice recontact filters', () => {
   const now = new Date('2026-07-27T12:00:00.000Z');
 
@@ -373,5 +428,46 @@ describe('runVoiceCronTick', () => {
     expect(summary.dispatched).toBe(0);
     expect(summary.failed).toBe(1);
     expect(summary.items[0]?.reason).toContain('compliance');
+  });
+
+  it('dispatches SOFT_STALE properties returned by the cron fetch', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async (query) => {
+      if (query.status === 'LIVE') return [];
+      return [
+        property({
+          id: 'soft-1',
+          status: 'SOFT_STALE',
+          listerPhone: '+919222222222',
+          listerName: 'Anita',
+        }),
+      ];
+    });
+
+    const dispatch = vi.fn(async (job) => ({
+      ok: true as const,
+      result: {
+        jobId: job.jobId,
+        status: 'dispatched' as const,
+        roomName: 'room-soft',
+        dispatchId: 'd-soft',
+        agentName: 'test-agent',
+        phoneNumber: job.owner.phoneNumber,
+      },
+    }));
+
+    const summary = await runVoiceCronTick(baseSettings(), {
+      client: { listAllProperties } as never,
+      dispatch,
+      now,
+    });
+
+    expect(summary.dispatched).toBe(1);
+    expect(summary.items[0]).toMatchObject({
+      propertyId: 'soft-1',
+      status: 'dispatched',
+      phoneNumber: '+919222222222',
+    });
+    expect(dispatch).toHaveBeenCalledOnce();
   });
 });
