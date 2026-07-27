@@ -336,13 +336,17 @@ curl http://localhost:8080/calls/results/{job_id} \
 
 ### 8. Call logging (Postgres + Drizzle)
 
-Set `DATABASE_URL` on both the **API** and **worker** (Render Postgres or local). Apply the schema once:
+Set `DATABASE_URL` on both the **API** and **worker** (Render Postgres or local). Apply migrations:
 
 ```bash
 # with DATABASE_URL in .env
-psql "$DATABASE_URL" -f drizzle/0000_call_logs.sql
-# or: npm run db:push
+npm run db:migrate
+
+# check what Drizzle has applied
+psql "$DATABASE_URL" -c "SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY created_at;"
 ```
+
+For new schema changes: edit `src/db/schema.ts` → `npm run db:generate` → commit `drizzle/` → `npm run db:migrate`. Avoid `db:push` in production.
 
 Each call is tracked in `call_logs` with:
 
@@ -435,8 +439,8 @@ Each call is tracked in `call_logs` with:
 | `npm run trigger:call` | CLI dispatch |
 | `npm run cron:voice` | Interval cron: fetch GullyNest properties and dispatch calls |
 | `npm run db:push` | Push Drizzle schema to Postgres |
-| `npm run db:generate` | Generate SQL migrations from schema |
-| `npm run db:migrate` | Apply SQL migrations |
+| `npm run db:generate` | Generate SQL migrations from schema (updates `drizzle/meta/_journal.json`) |
+| `npm run db:migrate` | Apply SQL migrations via Drizzle migrator |
 | `npm test` | Unit tests |
 | `npm run typecheck` | TypeScript check |
 
