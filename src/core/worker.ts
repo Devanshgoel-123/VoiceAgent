@@ -13,7 +13,6 @@ import {
   safeMarkCallFailed,
   safeMarkCallInProgress,
   safeMarkCallNoAnswer,
-  safeRecordExplicitOptOut,
 } from '../db/call-log-repository.js';
 import { createGullyNestClientFromSettings } from '../integrations/gullynest/client.js';
 import {
@@ -23,7 +22,6 @@ import {
 import { CallSessionRecord } from '../jobs/call-session-record.js';
 import { saveCallResultSnapshot } from '../jobs/persist-call-result.js';
 import { purgeExpiredCallData } from '../jobs/retention.js';
-import { safeAddPhoneSuppression } from '../jobs/suppression.js';
 import { callError, callInfo, callWarn } from './call-logger.js';
 import { registerProcessSafetyHandlers } from './process-safety.js';
 import { isNoAnswerError } from './telephony-errors.js';
@@ -109,16 +107,6 @@ export function createWorkerConfig(
               await saveCallResultSnapshot(snapshot);
             } catch (error) {
               callWarn(`file snapshot failed job=${snapshot.jobId}: ${error}`, logger);
-            }
-            if (snapshot.ownerOutcome === 'no' && snapshot.phoneNumber) {
-              await safeAddPhoneSuppression(snapshot.phoneNumber, 'owner_declined');
-            }
-            if (snapshot.metadata.do_not_call && snapshot.phoneNumber) {
-              const reason =
-                typeof snapshot.metadata.do_not_call_reason === 'string'
-                  ? snapshot.metadata.do_not_call_reason
-                  : 'owner_verbal_opt_out';
-              await safeRecordExplicitOptOut(snapshot.phoneNumber, reason);
             }
 
             const gullyClient = createGullyNestClientFromSettings(settings);

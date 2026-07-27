@@ -53,7 +53,6 @@ describe('secureDispatchPropertyAvailabilityCall', () => {
       isDatabaseEnabled: () => true,
       ReserveDispatchError,
       getCallLogRepository: () => ({
-        isPhoneSuppressed: vi.fn(async () => false),
         reserveDispatchSlot,
         attachDispatch: vi.fn(),
         releaseReservation: vi.fn(),
@@ -94,7 +93,6 @@ describe('secureDispatchPropertyAvailabilityCall', () => {
       isDatabaseEnabled: () => true,
       ReserveDispatchError,
       getCallLogRepository: () => ({
-        isPhoneSuppressed: vi.fn(async () => false),
         reserveDispatchSlot,
         attachDispatch,
         releaseReservation: vi.fn(),

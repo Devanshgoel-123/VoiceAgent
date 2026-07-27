@@ -156,8 +156,8 @@ describe('API server', () => {
       failure: {
         kind: 'compliance',
         status: 403,
-        error: 'Phone number is on the do-not-call / suppression list',
-        reason: 'suppressed',
+        error: 'Calls are only allowed between 9:00 and 20:00 Asia/Kolkata',
+        reason: 'outside_calling_hours',
       },
     });
 
@@ -175,7 +175,7 @@ describe('API server', () => {
       });
 
     expect(res.status).toBe(403);
-    expect(res.body.reason).toBe('suppressed');
+    expect(res.body.reason).toBe('outside_calling_hours');
   });
 
   it('returns 503 when the database lock path is unavailable', async () => {

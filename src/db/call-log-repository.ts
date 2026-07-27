@@ -11,7 +11,6 @@ import type { DispatchResult } from '../jobs/models.js';
 import { getDb, isDatabaseEnabled } from './client.js';
 import {
   callLogs,
-  suppressedNumbers,
   type CallLogRow,
 } from './schema.js';
 
@@ -420,32 +419,6 @@ export class CallLogRepository {
 
     return recentRows[0] ?? null;
   }
-
-  async isPhoneSuppressed(phoneNumber: string): Promise<boolean> {
-    if (!isDatabaseEnabled()) return false;
-
-    const db = getDb();
-    const rows = await db
-      .select({ id: suppressedNumbers.id })
-      .from(suppressedNumbers)
-      .where(eq(suppressedNumbers.phoneNumber, phoneNumber))
-      .limit(1);
-    return rows.length > 0;
-  }
-
-  async addPhoneSuppression(phoneNumber: string, reason: string): Promise<void> {
-    if (!isDatabaseEnabled()) return;
-
-    const db = getDb();
-    await db
-      .insert(suppressedNumbers)
-      .values({ phoneNumber, reason })
-      .onConflictDoNothing({ target: suppressedNumbers.phoneNumber });
-  }
-
-  async recordExplicitOptOut(phoneNumber: string, reason: string): Promise<void> {
-    await this.addPhoneSuppression(phoneNumber, reason);
-  }
 }
 
 let singleton: CallLogRepository | null = null;
@@ -520,17 +493,6 @@ export async function safeUpsertDispatched(
     await getCallLogRepository().upsertDispatched(job, dispatch);
   } catch (error) {
     callWarn(`[CALL] call_log.dispatch_fail job=${job.jobId} error=${error}`);
-  }
-}
-
-export async function safeRecordExplicitOptOut(
-  phoneNumber: string,
-  reason: string,
-): Promise<void> {
-  try {
-    await getCallLogRepository().recordExplicitOptOut(phoneNumber, reason);
-  } catch (error) {
-    callWarn(`[CALL] suppression.opt_out_fail phone=${phoneNumber} error=${error}`);
   }
 }
 

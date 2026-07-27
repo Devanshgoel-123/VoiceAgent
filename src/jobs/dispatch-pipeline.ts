@@ -36,7 +36,7 @@ export type SecureDispatchResult =
   | { ok: false; failure: SecureDispatchFailure };
 
 /**
- * Fail-closed dispatch: requires DB, enforces quiet hours + suppression,
+ * Fail-closed dispatch: requires DB, enforces quiet hours,
  * atomically reserves (property_id, phone_number), then creates LiveKit dispatch.
  */
 export async function secureDispatchPropertyAvailabilityCall(
@@ -58,24 +58,7 @@ export async function secureDispatchPropertyAvailabilityCall(
 
   const repo = getCallLogRepository();
 
-  let suppressed: boolean;
-  try {
-    suppressed = await repo.isPhoneSuppressed(job.owner.phoneNumber);
-  } catch (error) {
-    return {
-      ok: false,
-      failure: {
-        kind: 'dispatch_failed',
-        status: 503,
-        error: `Compliance check failed: ${error}`,
-      },
-    };
-  }
-
-  const compliance = evaluateDispatchCompliance({
-    settings,
-    isSuppressed: suppressed,
-  });
+  const compliance = evaluateDispatchCompliance({ settings });
   if (!compliance.allowed) {
     return {
       ok: false,
@@ -83,7 +66,7 @@ export async function secureDispatchPropertyAvailabilityCall(
         kind: 'compliance',
         status: 403,
         error: compliance.detail ?? 'Call blocked by compliance policy',
-        reason: compliance.reason ?? 'suppressed',
+        reason: compliance.reason ?? 'outside_calling_hours',
       },
     };
   }
