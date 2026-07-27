@@ -45,6 +45,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
         companyName: state.companyName,
         companyWebsite: state.companyWebsite,
         callerName: (metadata.caller_name as string) ?? settings.callerName,
+        ownerName: (metadata.owner_name as string | undefined) ?? undefined,
         propertyAddress: (metadata.property_address as string) ?? 'your property',
         propertyType: metadata.property_type as string | undefined,
         bhk: metadata.bhk as string | undefined,
@@ -95,7 +96,7 @@ export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: Cal
   return {
     recordPropertyAvailability: llm.tool({
       description:
-        'Record yes/no on property availability. After this tool, do not speak — the system plays a scripted closing and hangs up.',
+        'Record a clear yes/no answer about whether the property is still available for rent. Do NOT call this for questions, clarifications, or statements that only happen to contain yes/no. After this tool, do not speak — the system plays a scripted closing and hangs up.',
       parameters: z.object({
         isAvailable: z.boolean(),
         ownerResponse: z.string(),
@@ -136,7 +137,8 @@ export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: Cal
     }),
 
     switchConversationLanguage: llm.tool({
-      description: 'Switch spoken language when the owner clearly changes language.',
+      description:
+        'Switch spoken language immediately when the owner asks to speak English, Hindi, or Kannada (e.g. "please speak in English"). Call this before replying.',
       parameters: z.object({
         language: z.enum(['en-IN', 'hi-IN', 'kn-IN']),
       }),
