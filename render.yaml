@@ -1,0 +1,115 @@
+services:
+  # HTTP API — receives dispatch requests, serves call results. Needs a public URL.
+  - type: web
+    name: gully-voice-api
+    runtime: node
+    plan: starter
+    region: singapore
+    buildCommand: npm ci && npm run build
+    preDeployCommand: npm run db:migrate
+    startCommand: node dist/api/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: API_PORT
+        value: "10000"
+      - key: PORT
+        value: "10000"
+      - fromGroup: gully-voice-agent-shared
+
+  # LiveKit agent worker — long-running, dials out via SIP, no inbound HTTP.
+  - type: worker
+    name: gully-voice-worker
+    runtime: node
+    plan: starter
+    region: singapore
+    buildCommand: npm ci && npm run build
+    startCommand: node dist/workers/property-availability.worker.js start
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - fromGroup: gully-voice-agent-shared
+
+  # Voice-cron loop — polls GullyNest for stale listings and dispatches calls.
+  # - type: worker
+  #   name: gully-voice-cron
+  #   runtime: node
+  #   plan: starter
+  #   region: singapore
+  #   buildCommand: npm ci && npm run build
+  #   startCommand: node dist/scripts/run-voice-cron.js
+  #   envVars:
+  #     - key: NODE_VERSION
+  #       value: "20"
+  #     - fromGroup: gully-voice-agent-shared
+
+envVarGroups:
+  - name: gully-voice-agent-shared
+    envVars:
+      - key: LIVEKIT_URL
+        sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: SARVAM_API_KEY
+        sync: false
+      - key: TTS_PROVIDER
+        value: sarvam
+      - key: ELEVEN_API_KEY
+        sync: false
+      - key: ELEVENLABS_VOICE_ID
+        sync: false
+      - key: ELEVENLABS_MODEL
+        value: eleven_flash_v2_5
+      - key: SIP_OUTBOUND_TRUNK_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: API_SECRET_KEY
+        sync: false
+      - key: API_READ_RATE_LIMIT_PER_MINUTE
+        value: "60"
+      - key: API_SUPPRESSION_WRITE_RATE_LIMIT_PER_MINUTE
+        value: "10"
+      - key: VOICE_AGENT_API_BASE_URL
+        sync: false
+      - key: VOICE_AGENT_API_SECRET
+        sync: false
+      - key: VOICE_CRON_INTERVAL_MS
+        value: "900000"
+      - key: DISPATCH_COOLDOWN_MS
+        value: "604800000"
+      - key: CALLING_HOURS_START_HOUR
+        value: "9"
+      - key: CALLING_HOURS_END_HOUR
+        value: "20"
+      - key: CALLING_HOURS_TZ
+        value: Asia/Kolkata
+      - key: APP_ENV
+        value: production
+      - key: CALL_DEBUG_LOGGING
+        value: "false"
+      - key: CALL_DATA_RETENTION_DAYS
+        value: "15"
+      - key: AGENT_NAME
+        value: gully-property-availability-agent
+      - key: COMPANY_NAME
+        value: Galynest
+      - key: COMPANY_WEBSITE
+        value: galynest.com
+      - key: CALLER_NAME
+        value: Aditi
+      - key: TTS_VOLUME
+        value: "0.55"
+      - key: TTS_SPEED
+        value: "0.8"
+      - key: LLM_MODEL
+        value: sarvam-105b
+      - key: DEFAULT_LANGUAGE
+        value: en-IN
+      - key: TELEPHONY_SAMPLE_RATE
+        value: "8000"
