@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  evaluateCallSuppression,
   evaluateDispatchCompliance,
   isWithinCallingHours,
 } from '../src/jobs/compliance.js';
@@ -61,22 +60,20 @@ describe('calling hours', () => {
   });
 });
 
-describe('suppression compliance', () => {
-  it('allows calls when not suppressed', () => {
-    expect(evaluateCallSuppression(false).allowed).toBe(true);
+describe('dispatch compliance', () => {
+  it('allows calls inside calling hours', () => {
+    const noonIst = new Date('2026-07-24T06:30:00.000Z');
+    const decision = evaluateDispatchCompliance({
+      settings: settings(),
+      now: noonIst,
+    });
+    expect(decision.allowed).toBe(true);
   });
 
-  it('blocks suppressed numbers', () => {
-    const decision = evaluateCallSuppression(true);
-    expect(decision.allowed).toBe(false);
-    expect(decision.reason).toBe('suppressed');
-  });
-
-  it('combines quiet hours with suppression', () => {
+  it('blocks calls outside calling hours', () => {
     const eveningIst = new Date('2026-07-24T15:30:00.000Z');
     const decision = evaluateDispatchCompliance({
       settings: settings(),
-      isSuppressed: false,
       now: eveningIst,
     });
     expect(decision.allowed).toBe(false);

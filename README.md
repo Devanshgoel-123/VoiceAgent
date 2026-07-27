@@ -466,7 +466,7 @@ Import it from a worker, add a dispatch path, and expose an API route. Reuse the
 - Set `DATABASE_URL` on API + worker for durable call logs (transcript, languages, outcome)
 - Put `APP_ENV=production` and keep `CALL_DEBUG_LOGGING` off unless debugging
 - Run a single healthy worker per environment; kill orphans before redeploy
-- Ensure do-not-call / suppression compliance
+- GullyNest API decides which properties to call; voice-agent only enforces quiet hours and dispatch locks
 - Twilio trial: verify destination numbers
 - Prefer the hangup path that **deletes the LiveKit room** — that is what drops the SIP/PSTN call when `closeOnDisconnect` is false
 
