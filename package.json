@@ -20,6 +20,7 @@
     "daemon:stop": "lk agent daemon stop",
     "dev:api": "tsx src/api/server.ts",
     "trigger:call": "tsx src/scripts/trigger-call.ts",
+    "cron:voice": "tsx src/scripts/run-voice-cron.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/scripts/apply-migrations.ts",
     "db:purge-expired": "tsx src/scripts/purge-expired-call-data.ts",

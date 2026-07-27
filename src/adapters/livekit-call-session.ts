@@ -290,10 +290,15 @@ export class LiveKitCallSession implements CallLifecycle {
 
   /**
    * Clear yes/no without LLM: record outcome and hang up with scripted closing.
+   * Only short, unambiguous answers — long clarifications go to the LLM.
    * Returns true when handled (caller must skip commitUserTurn).
    */
   private tryFastAvailabilityAnswer(transcript: string): boolean {
     if (!this.openingGreeted || this.hangupScheduled || this.hangupStarted) {
+      return false;
+    }
+
+    if (!LanguageManager.isShortYesNo(transcript)) {
       return false;
     }
 

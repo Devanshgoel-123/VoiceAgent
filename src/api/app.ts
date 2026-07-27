@@ -2,10 +2,7 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import type { Settings } from '../config/settings.js';
 import { createApiKeyMiddleware } from './auth-middleware.js';
-import {
-  callPreferenceUpsertSchema,
-  propertyAvailabilityRequestSchema,
-} from './schemas.js';
+import { propertyAvailabilityRequestSchema } from './schemas.js';
 import { CallJobDispatcher } from '../jobs/dispatcher.js';
 import { secureDispatchPropertyAvailabilityCall } from '../jobs/dispatch-pipeline.js';
 import {
@@ -13,15 +10,11 @@ import {
   type PropertyAvailabilityCallJob,
 } from '../jobs/models.js';
 import { CallResultStore } from '../jobs/results.js';
-import {
-  getCallLogRepository,
-  isDatabaseEnabled,
-} from '../db/call-log-repository.js';
+import { getCallLogRepository, isDatabaseEnabled } from '../db/call-log-repository.js';
 import { listAgents } from '../agents/registry.js';
 
-/** Test-only overrides — production uses defaults below. */
+/** Test-only overrides — production uses settings defaults. */
 export interface CreateAppOptions {
-  writeRateLimitMax?: number;
   readRateLimitMax?: number;
 }
 
@@ -36,14 +29,6 @@ export function createApp(
   const dispatcher = new CallJobDispatcher(settings);
   const resultStore = new CallResultStore();
 
-  const callWriteLimiter = rateLimit({
-    windowMs: 60_000,
-    max: options.writeRateLimitMax ?? settings.apiWriteRateLimitPerMinute,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: 'Too many requests' },
-  });
-
   const callReadLimiter = rateLimit({
     windowMs: 60_000,
     max: options.readRateLimitMax ?? settings.apiReadRateLimitPerMinute,
@@ -56,85 +41,9 @@ export function createApp(
     res.json({ status: 'ok', agents: listAgents() });
   });
 
-  app.post(
-    '/calls/property-availability',
-    requireApiKey,
-    callWriteLimiter,
-    async (req, res) => {
-      try {
-        const parsed = propertyAvailabilityRequestSchema.safeParse(req.body);
-        if (!parsed.success) {
-          res.status(400).json({
-            error: 'Invalid request body',
-            details: parsed.error.flatten(),
-          });
-          return;
-        }
-
-        const body = parsed.data;
-
-        const job: PropertyAvailabilityCallJob = createPropertyAvailabilityJob({
-          owner: { name: body.owner_name, phoneNumber: body.phone_number },
-          property: {
-            propertyId: body.property_id,
-            address: body.property_address,
-            propertyType: body.property_type,
-            bhk: body.bhk,
-            rentAmount: body.rent_amount,
-            city: body.city,
-          },
-          companyName: settings.companyName,
-          callerName: body.caller_name?.trim() || settings.callerName,
-          preferredLanguage: body.preferred_language,
-          metadata:
-            body.tts_provider === 'sarvam' || body.tts_provider === 'elevenlabs'
-              ? { tts_provider: body.tts_provider }
-              : {},
-        });
-
-        const outcome = await secureDispatchPropertyAvailabilityCall(
-          job,
-          settings,
-          dispatcher,
-        );
-
-        if (!outcome.ok) {
-          const { failure } = outcome;
-          if (failure.kind === 'compliance') {
-            res.status(failure.status).json({
-              error: failure.error,
-              reason: failure.reason,
-            });
-            return;
-          }
-          if (failure.kind === 'conflict') {
-            res.status(failure.status).json({
-              error: failure.error,
-              existingJobId: failure.existingJobId,
-              existingStatus: failure.existingStatus,
-            });
-            return;
-          }
-          res.status(failure.status).json({ error: failure.error });
-          return;
-        }
-
-        res.json(outcome.result);
-      } catch (error) {
-        console.error('Failed to dispatch call job:', error);
-        res.status(500).json({ error: String(error) });
-      }
-    },
-  );
-
-  app.put('/calls/preferences', requireApiKey, callWriteLimiter, async (req, res) => {
+  app.post('/calls/property-availability', requireApiKey, async (req, res) => {
     try {
-      if (!isDatabaseEnabled()) {
-        res.status(503).json({ error: 'DATABASE_URL is required for call preferences' });
-        return;
-      }
-
-      const parsed = callPreferenceUpsertSchema.safeParse(req.body);
+      const parsed = propertyAvailabilityRequestSchema.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({
           error: 'Invalid request body',
@@ -144,65 +53,59 @@ export function createApp(
       }
 
       const body = parsed.data;
-      const row = await getCallLogRepository().upsertCallPreference({
-        phoneNumber: body.phone_number,
-        consentStatus: body.consent_status,
-        consentSource: body.consent_source,
-        dnd: body.dnd,
-        dndSource: body.dnd_source,
-        optedOut: body.opted_out,
-        optOutReason: body.opt_out_reason,
+
+      const job: PropertyAvailabilityCallJob = createPropertyAvailabilityJob({
+        owner: { name: body.owner_name, phoneNumber: body.phone_number },
+        property: {
+          propertyId: body.property_id,
+          address: body.property_address,
+          propertyType: body.property_type,
+          bhk: body.bhk,
+          rentAmount: body.rent_amount,
+          city: body.city,
+        },
+        companyName: settings.companyName,
+        callerName: body.caller_name?.trim() || settings.callerName,
+        preferredLanguage: body.preferred_language,
+        metadata:
+          body.tts_provider === 'sarvam' || body.tts_provider === 'elevenlabs'
+            ? { tts_provider: body.tts_provider }
+            : {},
       });
 
-      res.json({
-        phoneNumber: row.phoneNumber,
-        consentStatus: row.consentStatus,
-        consentSource: row.consentSource,
-        consentAt: row.consentAt?.toISOString() ?? null,
-        dnd: row.dnd,
-        dndSource: row.dndSource,
-        dndAt: row.dndAt?.toISOString() ?? null,
-        optedOutAt: row.optedOutAt?.toISOString() ?? null,
-        optOutReason: row.optOutReason,
-        updatedAt: row.updatedAt.toISOString(),
-      });
+      const outcome = await secureDispatchPropertyAvailabilityCall(
+        job,
+        settings,
+        dispatcher,
+      );
+
+      if (!outcome.ok) {
+        const { failure } = outcome;
+        if (failure.kind === 'compliance') {
+          res.status(failure.status).json({
+            error: failure.error,
+            reason: failure.reason,
+          });
+          return;
+        }
+        if (failure.kind === 'conflict') {
+          res.status(failure.status).json({
+            error: failure.error,
+            existingJobId: failure.existingJobId,
+            existingStatus: failure.existingStatus,
+          });
+          return;
+        }
+        res.status(failure.status).json({ error: failure.error });
+        return;
+      }
+
+      res.json(outcome.result);
     } catch (error) {
-      console.error('Failed to update call preferences:', error);
+      console.error('Failed to dispatch call job:', error);
       res.status(500).json({ error: String(error) });
     }
   });
-
-  app.get(
-    '/calls/preferences/:phoneNumber',
-    requireApiKey,
-    callReadLimiter,
-    async (req, res) => {
-      if (!isDatabaseEnabled()) {
-        res.status(503).json({ error: 'DATABASE_URL is required for call preferences' });
-        return;
-      }
-
-      const phone = decodeURIComponent(req.params.phoneNumber);
-      const row = await getCallLogRepository().getCallPreference(phone);
-      if (!row) {
-        res.status(404).json({ error: `No preferences found for ${phone}` });
-        return;
-      }
-
-      res.json({
-        phoneNumber: row.phoneNumber,
-        consentStatus: row.consentStatus,
-        consentSource: row.consentSource,
-        consentAt: row.consentAt?.toISOString() ?? null,
-        dnd: row.dnd,
-        dndSource: row.dndSource,
-        dndAt: row.dndAt?.toISOString() ?? null,
-        optedOutAt: row.optedOutAt?.toISOString() ?? null,
-        optOutReason: row.optOutReason,
-        updatedAt: row.updatedAt.toISOString(),
-      });
-    },
-  );
 
   app.get('/calls/results/:jobId', requireApiKey, callReadLimiter, async (req, res) => {
     if (isDatabaseEnabled()) {

@@ -34,8 +34,14 @@ export interface Settings {
   callingHoursTimeZone: string;
   /** Days to retain verbatim transcripts in Postgres (default 15). */
   callDataRetentionDays: number;
-  apiWriteRateLimitPerMinute: number;
+  /** Per-IP limit for GET /calls/results* (per minute). */
   apiReadRateLimitPerMinute: number;
+  /** GullyNest marketplace base URL (optional; enables voice cron + outcome PATCH). */
+  voiceAgentApiBaseUrl?: string;
+  /** Shared secret for `X-Voice-Admin-Secret` (optional). */
+  voiceAgentApiSecret?: string;
+  /** Ms between cron ticks (default 15 minutes). */
+  voiceCronIntervalMs: number;
   appEnv: AppEnv;
   callDebugLogging: boolean;
 }
@@ -137,13 +143,15 @@ export function getSettings(): Settings {
     callingHoursEndHour: parsePositiveInt(process.env.CALLING_HOURS_END_HOUR, 20),
     callingHoursTimeZone: process.env.CALLING_HOURS_TZ?.trim() || 'Asia/Kolkata',
     callDataRetentionDays: parsePositiveInt(process.env.CALL_DATA_RETENTION_DAYS, 15),
-    apiWriteRateLimitPerMinute: parsePositiveInt(
-      process.env.API_WRITE_RATE_LIMIT_PER_MINUTE,
-      30,
-    ),
     apiReadRateLimitPerMinute: parsePositiveInt(
       process.env.API_READ_RATE_LIMIT_PER_MINUTE,
       60,
+    ),
+    voiceAgentApiBaseUrl: process.env.VOICE_AGENT_API_BASE_URL?.trim() || undefined,
+    voiceAgentApiSecret: process.env.VOICE_AGENT_API_SECRET?.trim() || undefined,
+    voiceCronIntervalMs: parsePositiveInt(
+      process.env.VOICE_CRON_INTERVAL_MS,
+      15 * 60 * 1000,
     ),
     appEnv,
     callDebugLogging,

@@ -62,6 +62,38 @@ describe('LanguageManager', () => {
     expect(result.isNegative).toBe(true);
   });
 
+  it('does not treat know/another as negative via substring', () => {
+    const result = manager.detectFromText(
+      'No, but you said Gullynest listed this, then how do I know if it is available?',
+    );
+    expect(result.isNegative).toBe(true);
+    expect(
+      LanguageManager.isShortYesNo(
+        'No, but you said Gullynest listed this, then how do I know if it is available?',
+      ),
+    ).toBe(false);
+    expect(manager.detectFromText('I want to know more').isNegative).toBeNull();
+  });
+
+  it('honors explicit language switch requests', () => {
+    expect(
+      LanguageManager.detectExplicitLanguageRequest('please speak in English'),
+    ).toBe('en-IN');
+    expect(
+      new LanguageManager('kn-IN').resolveSpokenLanguage(
+        'please switch to English',
+        'kn-IN',
+      ),
+    ).toBe('en-IN');
+  });
+
+  it('does not flap to Kannada from STT alone on English speech', () => {
+    const mgr = new LanguageManager('en-IN');
+    expect(
+      mgr.resolveSpokenLanguage('how much is the rent for this flat', 'kn-IN'),
+    ).toBe('en-IN');
+  });
+
   it('maps TTS speakers', () => {
     expect(manager.getTtsSpeaker('hi-IN')).toBe('anand');
     expect(manager.getTtsSpeaker('kn-IN')).toBe('priya');

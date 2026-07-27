@@ -29,8 +29,8 @@ const settings = (): Settings => ({
   callingHoursEndHour: 24,
   callingHoursTimeZone: 'UTC',
   callDataRetentionDays: 15,
-  apiWriteRateLimitPerMinute: 30,
   apiReadRateLimitPerMinute: 60,
+  voiceCronIntervalMs: 900_000,
   appEnv: 'developer',
   callDebugLogging: false,
   databaseUrl: 'postgresql://example',
@@ -53,7 +53,6 @@ describe('secureDispatchPropertyAvailabilityCall', () => {
       isDatabaseEnabled: () => true,
       ReserveDispatchError,
       getCallLogRepository: () => ({
-        getCallPreference: vi.fn(async () => null),
         isPhoneSuppressed: vi.fn(async () => false),
         reserveDispatchSlot,
         attachDispatch: vi.fn(),
@@ -95,7 +94,6 @@ describe('secureDispatchPropertyAvailabilityCall', () => {
       isDatabaseEnabled: () => true,
       ReserveDispatchError,
       getCallLogRepository: () => ({
-        getCallPreference: vi.fn(async () => null),
         isPhoneSuppressed: vi.fn(async () => false),
         reserveDispatchSlot,
         attachDispatch,

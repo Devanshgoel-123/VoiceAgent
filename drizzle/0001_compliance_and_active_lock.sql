@@ -11,24 +11,6 @@ CREATE TABLE IF NOT EXISTS suppressed_numbers (
 CREATE UNIQUE INDEX IF NOT EXISTS suppressed_numbers_phone_unique
   ON suppressed_numbers (phone_number);
 
-CREATE TABLE IF NOT EXISTS call_preferences (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  phone_number text NOT NULL,
-  consent_status text NOT NULL DEFAULT 'unknown',
-  consent_source text,
-  consent_at timestamptz,
-  dnd boolean NOT NULL DEFAULT false,
-  dnd_source text,
-  dnd_at timestamptz,
-  opted_out_at timestamptz,
-  opt_out_reason text,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS call_preferences_phone_unique
-  ON call_preferences (phone_number);
-
 -- Close stuck duplicate active rows so the unique index can be created.
 -- Keep the newest row per (property_id, phone_number); mark the rest failed.
 WITH ranked AS (

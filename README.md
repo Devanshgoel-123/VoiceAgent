@@ -63,6 +63,9 @@ Owner's phone (PSTN)
 │                        GULLY VOICE AGENT (TypeScript)                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
+│  GullyNest API ◄──GET /api/voice-admin/properties── Voice Cron (interval)   │
+│       │                                              fetch → dispatch each   │
+│       │                                                                      │
 │  Galynest Backend ──POST /calls/...──► Express API (src/api/server.ts)      │
 │                                              │                               │
 │                                              │ AgentDispatchClient           │
@@ -84,11 +87,11 @@ Owner's phone (PSTN)
 │  │       ├── LiveKitSipAdapter       dial + wait for mic track            │  │
 │  │       └── PropertyAvailabilityAgent  domain script + one tool          │  │
 │  │                                                                        │  │
-│  │  Hangup path: tool → scheduleHangup → goodbye → deleteRoom → end       │  │
+│  │  After call: PATCH /api/voice-admin/properties/{id}/call-outcome       │  │
 │  └────────────────────────────────────────────────────────────────────────┘  │
 │                                       │                                      │
 │                                       ▼                                      │
-│                         Call results JSON (src/jobs/results.ts)              │
+│                         Call logs (Postgres) + optional JSON snapshots       │
 └──────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       │ SIP outbound trunk
@@ -313,25 +316,16 @@ npm run trigger:call -- \
   --tts-provider elevenlabs
 ```
 
-**Auth + rate-limit smoke (API already running):**
+**Marketplace cron (fetch → dispatch on a fixed interval):**
+
+Requires `VOICE_AGENT_API_BASE_URL`, `VOICE_AGENT_API_SECRET`, `DATABASE_URL`, and a running worker. Which properties to call is decided by the GullyNest API — this repo only fetches and dispatches.
 
 ```bash
-npm run test:api:smoke
-# optional: lower limits in .env, restart API, then:
-TEST_RATE_LIMIT=1 API_WRITE_RATE_LIMIT_PER_MINUTE=3 npm run test:api:smoke
+npm run cron:voice              # runs forever (default every 15 min)
+npm run cron:voice -- --once    # single tick (manual / smoke test)
 ```
 
-**Preferences (consent / DND):**
-
-```bash
-curl -X PUT http://localhost:8080/calls/preferences \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $API_SECRET_KEY" \
-  -d '{"phone_number":"+919876543210","consent_status":"granted","consent_source":"dev"}'
-
-curl http://localhost:8080/calls/preferences/%2B919876543210 \
-  -H "Authorization: Bearer $API_SECRET_KEY"
-```
+When each call finishes, the worker PATCHes `/api/voice-admin/properties/{id}/call-outcome` (`yes`→`available`, `no`→`stale`, otherwise→`soft_stale`). See [`voice-agent-api.md`](voice-agent-api.md).
 
 ### 7. Fetch call result
 
@@ -413,12 +407,14 @@ Each call is tracked in `call_logs` with:
 | `CALLER_NAME` | No | Spoken caller name (default: `Jitesh`); API `caller_name` can override it per call |
 | `API_HOST` / `API_PORT` | No | Trigger API bind address |
 | `API_SECRET_KEY` | Yes (API) | Bearer / `x-api-key` secret for `/calls/*` |
-| `API_WRITE_RATE_LIMIT_PER_MINUTE` | No | Write limit per IP (default `30`) |
-| `API_READ_RATE_LIMIT_PER_MINUTE` | No | Read limit per IP (default `60`) |
+| `API_READ_RATE_LIMIT_PER_MINUTE` | No | Per-IP limit for `GET /calls/results*` (default `60`/min) |
 | `DISPATCH_COOLDOWN_MS` | No | Min ms between same property+phone (default 24h) |
 | `CALLING_HOURS_START_HOUR` / `CALLING_HOURS_END_HOUR` | No | Quiet-hours window (default 9–20) |
 | `CALLING_HOURS_TZ` | No | Time zone for calling hours (default `Asia/Kolkata`) |
 | `CALL_DATA_RETENTION_DAYS` | No | Days to keep transcripts in Postgres (default `15`) |
+| `VOICE_AGENT_API_BASE_URL` | For cron/outcomes | GullyNest marketplace host (no trailing slash) |
+| `VOICE_AGENT_API_SECRET` | For cron/outcomes | Shared `X-Voice-Admin-Secret` |
+| `VOICE_CRON_INTERVAL_MS` | No | Ms between fetch+dispatch ticks (default `900000` = 15 min) |
 
 ### Logging
 
@@ -436,7 +432,7 @@ Each call is tracked in `call_logs` with:
 | `npm run console:worker` | Terminal test (no phone) |
 | `npm run dev:api` | Express trigger API |
 | `npm run trigger:call` | CLI dispatch |
-| `npm run test:api:smoke` | Auth + preferences smoke against local API |
+| `npm run cron:voice` | Interval cron: fetch GullyNest properties and dispatch calls |
 | `npm run db:push` | Push Drizzle schema to Postgres |
 | `npm run db:generate` | Generate SQL migrations from schema |
 | `npm run db:migrate` | Apply SQL migrations |
@@ -470,7 +466,7 @@ Import it from a worker, add a dispatch path, and expose an API route. Reuse the
 - Set `DATABASE_URL` on API + worker for durable call logs (transcript, languages, outcome)
 - Put `APP_ENV=production` and keep `CALL_DEBUG_LOGGING` off unless debugging
 - Run a single healthy worker per environment; kill orphans before redeploy
-- Ensure TRAI DND compliance and owner consent
+- Ensure do-not-call / suppression compliance
 - Twilio trial: verify destination numbers
 - Prefer the hangup path that **deletes the LiveKit room** — that is what drops the SIP/PSTN call when `closeOnDisconnect` is false
 
