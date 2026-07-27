@@ -9,7 +9,13 @@ import {
 } from '../src/integrations/gullynest/outcome-map.js';
 import type { CallLogSnapshot } from '../src/jobs/call-log-types.js';
 import type { Settings } from '../src/config/settings.js';
-import { propertyToJobInput, runVoiceCronTick } from '../src/jobs/voice-cron.js';
+import {
+  fetchCallableVoiceProperties,
+  propertyToJobInput,
+  runVoiceCronTick,
+  voiceContactedBeforeCutoff,
+  wasContactedWithinCooldown,
+} from '../src/jobs/voice-cron.js';
 import type { VoiceAdminProperty } from '../src/integrations/gullynest/types.js';
 
 function snapshot(
@@ -173,12 +179,13 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     llmModel: 'sarvam-105b',
     defaultLanguage: 'en-IN',
     telephonySampleRate: 8000,
-    dispatchCooldownMs: 86_400_000,
+    dispatchCooldownMs: 7 * 24 * 60 * 60 * 1000,
     callingHoursStartHour: 0,
     callingHoursEndHour: 24,
     callingHoursTimeZone: 'UTC',
     callDataRetentionDays: 15,
     apiReadRateLimitPerMinute: 60,
+    apiSuppressionWriteRateLimitPerMinute: 10,
     voiceAgentApiBaseUrl: 'https://example.com',
     voiceAgentApiSecret: 'secret',
     voiceCronIntervalMs: 900_000,
@@ -230,18 +237,82 @@ describe('propertyToJobInput', () => {
   });
 });
 
+describe('voice recontact filters', () => {
+  const now = new Date('2026-07-27T12:00:00.000Z');
+
+  it('builds a 7-day contactedBefore cutoff', () => {
+    expect(voiceContactedBeforeCutoff(now)).toBe('2026-07-20T12:00:00.000Z');
+  });
+
+  it('detects recent voice contacts', () => {
+    expect(
+      wasContactedWithinCooldown(
+        { voiceLastContactedAt: '2026-07-24T12:00:00.000Z' },
+        now,
+      ),
+    ).toBe(true);
+    expect(
+      wasContactedWithinCooldown(
+        { voiceLastContactedAt: '2026-07-19T12:00:00.000Z' },
+        now,
+      ),
+    ).toBe(false);
+    expect(wasContactedWithinCooldown({ voiceLastContactedAt: null }, now)).toBe(
+      false,
+    );
+  });
+
+  it('fetches LIVE and SOFT_STALE with contactedBefore', async () => {
+    const listAllProperties = vi.fn(async (query) => {
+      if (query.status === 'LIVE') {
+        return [
+          property({ id: 'live-1' }),
+          property({
+            id: 'live-recent',
+            voiceLastContactedAt: '2026-07-25T00:00:00.000Z',
+          }),
+        ];
+      }
+      return [
+        property({ id: 'soft-1', status: 'SOFT_STALE' }),
+        property({ id: 'stale-1', status: 'STALE' }),
+      ];
+    });
+
+    const properties = await fetchCallableVoiceProperties(
+      { listAllProperties } as never,
+      now,
+    );
+
+    expect(listAllProperties).toHaveBeenCalledTimes(2);
+    expect(listAllProperties).toHaveBeenCalledWith({
+      status: 'LIVE',
+      contactedBefore: '2026-07-20T12:00:00.000Z',
+    });
+    expect(listAllProperties).toHaveBeenCalledWith({
+      status: 'SOFT_STALE',
+      contactedBefore: '2026-07-20T12:00:00.000Z',
+    });
+    expect(properties.map((p) => p.id).sort()).toEqual(['live-1', 'soft-1']);
+  });
+});
+
 describe('runVoiceCronTick', () => {
   it('dispatches each callable property from the API response', async () => {
-    const listAllProperties = vi.fn(async () => [
-      property({ id: 'a', listerPhone: null }),
-      property({ id: 'b', shortId: '1' }),
-      property({
-        id: 'c',
-        shortId: '2',
-        listerPhone: '+919111111111',
-        listerName: 'Sita',
-      }),
-    ]);
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async (query) => {
+      if (query.status === 'SOFT_STALE') return [];
+      return [
+        property({ id: 'a', listerPhone: null }),
+        property({ id: 'b', shortId: '1' }),
+        property({
+          id: 'c',
+          shortId: '2',
+          listerPhone: '+919111111111',
+          listerName: 'Sita',
+        }),
+      ];
+    });
 
     const dispatch = vi.fn(async (job) => ({
       ok: true as const,
@@ -258,9 +329,17 @@ describe('runVoiceCronTick', () => {
     const summary = await runVoiceCronTick(baseSettings(), {
       client: { listAllProperties } as never,
       dispatch,
+      now,
     });
 
-    expect(listAllProperties).toHaveBeenCalledWith();
+    expect(listAllProperties).toHaveBeenCalledWith({
+      status: 'LIVE',
+      contactedBefore: '2026-07-20T12:00:00.000Z',
+    });
+    expect(listAllProperties).toHaveBeenCalledWith({
+      status: 'SOFT_STALE',
+      contactedBefore: '2026-07-20T12:00:00.000Z',
+    });
     expect(summary.skipped).toBe(1);
     expect(summary.dispatched).toBe(2);
     expect(summary.failed).toBe(0);
@@ -271,7 +350,10 @@ describe('runVoiceCronTick', () => {
   });
 
   it('records dispatch failures without throwing', async () => {
-    const listAllProperties = vi.fn(async () => [property()]);
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async (query) =>
+      query.status === 'LIVE' ? [property()] : [],
+    );
     const dispatch = vi.fn(async () => ({
       ok: false as const,
       failure: {
@@ -285,6 +367,7 @@ describe('runVoiceCronTick', () => {
     const summary = await runVoiceCronTick(baseSettings(), {
       client: { listAllProperties } as never,
       dispatch,
+      now,
     });
 
     expect(summary.dispatched).toBe(0);

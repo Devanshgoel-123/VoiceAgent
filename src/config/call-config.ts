@@ -11,5 +11,13 @@ export const OUTBOUND_ENDPOINTING_MIN_MS = 250;
 export const TURN_COMMIT_FALLBACK_MS = 250;
 /** After opening, hang up if the owner gives no final STT within this window. */
 export const OWNER_RESPONSE_TIMEOUT_MS = 30_000;
-/** Default minimum gap between dials to the same property or phone number. */
-export const DEFAULT_DISPATCH_COOLDOWN_MS = 86_400_000;
+/** Default minimum gap between dials to the same property or phone number (7 days). */
+export const DEFAULT_DISPATCH_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+/** Skip GullyNest properties voice-contacted within this window. */
+export const VOICE_RECONTACT_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * Property statuses the voice cron must request explicitly from GullyNest.
+ * The API defaults to LIVE only when `status` is omitted — SOFT_STALE is not included
+ * unless we pass it in the query.
+ */
+export const VOICE_CRON_PROPERTY_STATUSES = ['LIVE', 'SOFT_STALE'] as const;

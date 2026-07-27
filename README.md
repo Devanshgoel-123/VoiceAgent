@@ -318,7 +318,7 @@ npm run trigger:call -- \
 
 **Marketplace cron (fetch → dispatch on a fixed interval):**
 
-Requires `VOICE_AGENT_API_BASE_URL`, `VOICE_AGENT_API_SECRET`, `DATABASE_URL`, and a running worker. Which properties to call is decided by the GullyNest API — this repo only fetches and dispatches.
+Requires `VOICE_AGENT_API_BASE_URL`, `VOICE_AGENT_API_SECRET`, `DATABASE_URL`, and a running worker. Each tick explicitly requests **`LIVE`** and **`SOFT_STALE`** from GullyNest (the API defaults to LIVE only if `status` is omitted), plus `contactedBefore` for the 7-day recontact window, then dispatches.
 
 ```bash
 npm run cron:voice              # runs forever (default every 15 min)
@@ -409,7 +409,7 @@ Each call is tracked in `call_logs` with:
 | `API_SECRET_KEY` | Yes (API) | Bearer / `x-api-key` secret for `/calls/*` and `POST /suppressed-numbers` |
 | `API_READ_RATE_LIMIT_PER_MINUTE` | No | Per-IP limit for `GET /calls/results*` (default `60`/min) |
 | `API_SUPPRESSION_WRITE_RATE_LIMIT_PER_MINUTE` | No | Per-IP limit for `POST /suppressed-numbers` (default `10`/min) |
-| `DISPATCH_COOLDOWN_MS` | No | Min ms between same property+phone (default 24h) |
+| `DISPATCH_COOLDOWN_MS` | No | Min ms between same property+phone (default 7d) |
 | `CALLING_HOURS_START_HOUR` / `CALLING_HOURS_END_HOUR` | No | Quiet-hours window (default 9–20) |
 | `CALLING_HOURS_TZ` | No | Time zone for calling hours (default `Asia/Kolkata`) |
 | `CALL_DATA_RETENTION_DAYS` | No | Days to keep transcripts in Postgres (default `15`) |
