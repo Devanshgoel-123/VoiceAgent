@@ -3,20 +3,19 @@ import {
   createGullyNestClientFromSettings,
   type GullyNestClient,
 } from '../integrations/gullynest/client.js';
-import type { VoiceAdminProperty, VoicePropertyStatus } from '../integrations/gullynest/types.js';
+import type { VoiceAdminProperty } from '../integrations/gullynest/types.js';
 import {
   secureDispatchPropertyAvailabilityCall,
   type SecureDispatchResult,
 } from './dispatch-pipeline.js';
 import { createPropertyAvailabilityJob } from './models.js';
 
-export interface VoiceCronDispatchDeps {
+export interface VoiceCronDeps {
   client: GullyNestClient;
   dispatch: (
     job: ReturnType<typeof createPropertyAvailabilityJob>,
     settings: Settings,
   ) => Promise<SecureDispatchResult>;
-  now?: () => Date;
 }
 
 export interface VoiceCronItemResult {
@@ -33,11 +32,6 @@ export interface VoiceCronSummary {
   skipped: number;
   failed: number;
   items: VoiceCronItemResult[];
-}
-
-function contactedBeforeIso(recontactDays: number, now: Date): string {
-  const cutoff = new Date(now.getTime() - recontactDays * 24 * 60 * 60 * 1000);
-  return cutoff.toISOString();
 }
 
 export function propertyToJobInput(
@@ -70,36 +64,13 @@ export function propertyToJobInput(
   };
 }
 
-async function mapPool<T, R>(
-  items: T[],
-  concurrency: number,
-  worker: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let next = 0;
-
-  async function run(): Promise<void> {
-    while (next < items.length) {
-      const index = next;
-      next += 1;
-      results[index] = await worker(items[index]!);
-    }
-  }
-
-  const runners = Array.from(
-    { length: Math.min(concurrency, Math.max(items.length, 1)) },
-    () => run(),
-  );
-  await Promise.all(runners);
-  return results;
-}
-
 /**
- * Fetch LIVE (or configured) properties from GullyNest and dispatch outbound calls.
+ * One cron tick: fetch properties from GullyNest (API decides which rows to return)
+ * and dispatch an outbound job for each callable row.
  */
-export async function runVoiceCron(
+export async function runVoiceCronTick(
   settings: Settings,
-  deps?: Partial<VoiceCronDispatchDeps>,
+  deps?: Partial<VoiceCronDeps>,
 ): Promise<VoiceCronSummary> {
   const client =
     deps?.client ?? createGullyNestClientFromSettings(settings);
@@ -111,77 +82,111 @@ export async function runVoiceCron(
 
   const dispatch =
     deps?.dispatch ?? secureDispatchPropertyAvailabilityCall;
-  const now = deps?.now?.() ?? new Date();
 
-  const properties = await client.listAllProperties(
-    {
-      status: settings.voiceCronStatus as VoicePropertyStatus,
-      listingKind: settings.voiceCronListingKind,
-      contactedBefore: contactedBeforeIso(settings.voiceCronRecontactDays, now),
-      pageSize: settings.voiceCronPageSize,
-    },
-    settings.voiceCronMaxDispatch * 3,
-  );
-
-  const candidates: VoiceAdminProperty[] = [];
-  const skippedEarly: VoiceCronItemResult[] = [];
+  const properties = await client.listAllProperties();
+  const items: VoiceCronItemResult[] = [];
 
   for (const property of properties) {
-    if (candidates.length >= settings.voiceCronMaxDispatch) break;
     const input = propertyToJobInput(property, settings);
     if (!input) {
-      skippedEarly.push({
+      items.push({
         propertyId: property.id,
         phoneNumber: property.listerPhone ?? undefined,
         status: 'skipped',
-        reason: 'missing_lister_phone_or_address',
+        reason: 'missing_phone_or_address',
       });
       continue;
     }
-    candidates.push(property);
-  }
 
-  const dispatchResults = await mapPool(
-    candidates,
-    settings.voiceCronConcurrency,
-    async (property): Promise<VoiceCronItemResult> => {
-      const input = propertyToJobInput(property, settings)!;
-      const job = createPropertyAvailabilityJob(input);
-      try {
-        const outcome = await dispatch(job, settings);
-        if (!outcome.ok) {
-          return {
-            propertyId: property.id,
-            phoneNumber: job.owner.phoneNumber,
-            status: 'failed',
-            reason: `${outcome.failure.kind}: ${outcome.failure.error}`,
-            jobId: job.jobId,
-          };
-        }
-        return {
-          propertyId: property.id,
-          phoneNumber: job.owner.phoneNumber,
-          status: 'dispatched',
-          jobId: outcome.result.jobId,
-        };
-      } catch (error) {
-        return {
+    const job = createPropertyAvailabilityJob(input);
+    try {
+      const outcome = await dispatch(job, settings);
+      if (!outcome.ok) {
+        items.push({
           propertyId: property.id,
           phoneNumber: job.owner.phoneNumber,
           status: 'failed',
-          reason: String(error),
+          reason: `${outcome.failure.kind}: ${outcome.failure.error}`,
           jobId: job.jobId,
-        };
+        });
+        continue;
       }
-    },
-  );
 
-  const items = [...skippedEarly, ...dispatchResults];
+      items.push({
+        propertyId: property.id,
+        phoneNumber: job.owner.phoneNumber,
+        status: 'dispatched',
+        jobId: outcome.result.jobId,
+      });
+    } catch (error) {
+      items.push({
+        propertyId: property.id,
+        phoneNumber: job.owner.phoneNumber,
+        status: 'failed',
+        reason: String(error),
+        jobId: job.jobId,
+      });
+    }
+  }
+
   return {
     fetched: properties.length,
     dispatched: items.filter((i) => i.status === 'dispatched').length,
     skipped: items.filter((i) => i.status === 'skipped').length,
     failed: items.filter((i) => i.status === 'failed').length,
     items,
+  };
+}
+
+export interface VoiceCronLoopHandle {
+  stop(): void;
+}
+
+/**
+ * Long-running cron: run a tick immediately, then repeat every `voiceCronIntervalMs`.
+ */
+export function startVoiceCronLoop(
+  settings: Settings,
+  deps?: Partial<VoiceCronDeps>,
+): VoiceCronLoopHandle {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const runTick = async (): Promise<void> => {
+    const summary = await runVoiceCronTick(settings, deps);
+    console.log(
+      JSON.stringify({
+        tickAt: new Date().toISOString(),
+        ...summary,
+      }),
+    );
+  };
+
+  const scheduleNext = (): void => {
+    timer = setTimeout(async () => {
+      if (stopped) return;
+      try {
+        await runTick();
+      } catch (error) {
+        console.error('Voice cron tick failed:', error);
+      }
+      if (!stopped) scheduleNext();
+    }, settings.voiceCronIntervalMs);
+  };
+
+  void (async () => {
+    try {
+      await runTick();
+    } catch (error) {
+      console.error('Voice cron tick failed:', error);
+    }
+    if (!stopped) scheduleNext();
+  })();
+
+  return {
+    stop() {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    },
   };
 }

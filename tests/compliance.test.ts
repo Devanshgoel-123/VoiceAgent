@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  evaluateCallPreferences,
+  evaluateCallSuppression,
   evaluateDispatchCompliance,
   isWithinCallingHours,
 } from '../src/jobs/compliance.js';
-import type { CallPreferenceRow } from '../src/db/schema.js';
 import type { Settings } from '../src/config/settings.js';
 
 function settings(): Pick<
@@ -41,33 +40,10 @@ function settings(): Pick<
     callingHoursEndHour: 20,
     callingHoursTimeZone: 'Asia/Kolkata',
     callDataRetentionDays: 15,
-    apiWriteRateLimitPerMinute: 30,
     apiReadRateLimitPerMinute: 60,
-    voiceCronPageSize: 50,
-    voiceCronMaxDispatch: 50,
-    voiceCronConcurrency: 3,
-    voiceCronRecontactDays: 7,
-    voiceCronStatus: 'LIVE',
+    voiceCronIntervalMs: 900_000,
     appEnv: 'developer',
     callDebugLogging: false,
-  };
-}
-
-function preference(overrides: Partial<CallPreferenceRow> = {}): CallPreferenceRow {
-  return {
-    id: 'pref-1',
-    phoneNumber: '+919876543210',
-    consentStatus: 'unknown',
-    consentSource: null,
-    consentAt: null,
-    dnd: false,
-    dndSource: null,
-    dndAt: null,
-    optedOutAt: null,
-    optOutReason: null,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    ...overrides,
   };
 }
 
@@ -85,37 +61,21 @@ describe('calling hours', () => {
   });
 });
 
-describe('call preference compliance', () => {
-  it('allows unknown consent when not suppressed', () => {
-    expect(evaluateCallPreferences(preference(), false).allowed).toBe(true);
-  });
-
-  it('blocks DND numbers', () => {
-    const decision = evaluateCallPreferences(preference({ dnd: true }), false);
-    expect(decision.allowed).toBe(false);
-    expect(decision.reason).toBe('dnd');
-  });
-
-  it('blocks explicit opt-outs', () => {
-    const decision = evaluateCallPreferences(
-      preference({ optedOutAt: new Date(), optOutReason: 'stop calling' }),
-      false,
-    );
-    expect(decision.allowed).toBe(false);
-    expect(decision.reason).toBe('opted_out');
+describe('suppression compliance', () => {
+  it('allows calls when not suppressed', () => {
+    expect(evaluateCallSuppression(false).allowed).toBe(true);
   });
 
   it('blocks suppressed numbers', () => {
-    const decision = evaluateCallPreferences(null, true);
+    const decision = evaluateCallSuppression(true);
     expect(decision.allowed).toBe(false);
     expect(decision.reason).toBe('suppressed');
   });
 
-  it('combines quiet hours with preferences', () => {
+  it('combines quiet hours with suppression', () => {
     const eveningIst = new Date('2026-07-24T15:30:00.000Z');
     const decision = evaluateDispatchCompliance({
       settings: settings(),
-      preference: preference(),
       isSuppressed: false,
       now: eveningIst,
     });

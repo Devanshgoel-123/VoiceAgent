@@ -11,11 +11,8 @@ import type { DispatchResult } from '../jobs/models.js';
 import { getDb, isDatabaseEnabled } from './client.js';
 import {
   callLogs,
-  callPreferences,
   suppressedNumbers,
   type CallLogRow,
-  type CallPreferenceRow,
-  type ConsentStatus,
 } from './schema.js';
 
 function emptyTranscriptDefaults(): {
@@ -446,100 +443,7 @@ export class CallLogRepository {
       .onConflictDoNothing({ target: suppressedNumbers.phoneNumber });
   }
 
-  async getCallPreference(phoneNumber: string): Promise<CallPreferenceRow | null> {
-    if (!isDatabaseEnabled()) return null;
-
-    const db = getDb();
-    const rows = await db
-      .select()
-      .from(callPreferences)
-      .where(eq(callPreferences.phoneNumber, phoneNumber))
-      .limit(1);
-    return rows[0] ?? null;
-  }
-
-  async upsertCallPreference(input: {
-    phoneNumber: string;
-    consentStatus?: ConsentStatus;
-    consentSource?: string;
-    dnd?: boolean;
-    dndSource?: string;
-    optedOut?: boolean;
-    optOutReason?: string;
-  }): Promise<CallPreferenceRow> {
-    if (!isDatabaseEnabled()) {
-      throw new Error('DATABASE_URL is required to update call preferences');
-    }
-
-    const db = getDb();
-    const now = new Date();
-    const existing = await this.getCallPreference(input.phoneNumber);
-
-    const values = {
-      phoneNumber: input.phoneNumber,
-      consentStatus: input.consentStatus ?? existing?.consentStatus ?? 'unknown',
-      consentSource: input.consentSource ?? existing?.consentSource ?? null,
-      consentAt:
-        input.consentStatus !== undefined
-          ? now
-          : (existing?.consentAt ?? null),
-      dnd: input.dnd ?? existing?.dnd ?? false,
-      dndSource: input.dndSource ?? existing?.dndSource ?? null,
-      dndAt:
-        input.dnd !== undefined ? now : (existing?.dndAt ?? null),
-      optedOutAt:
-        input.optedOut === true
-          ? now
-          : input.optedOut === false
-            ? null
-            : (existing?.optedOutAt ?? null),
-      optOutReason:
-        input.optedOut === true
-          ? (input.optOutReason ?? 'api_update')
-          : input.optedOut === false
-            ? null
-            : (existing?.optOutReason ?? null),
-      updatedAt: now,
-      createdAt: existing?.createdAt ?? now,
-    };
-
-    const rows = await db
-      .insert(callPreferences)
-      .values(values)
-      .onConflictDoUpdate({
-        target: callPreferences.phoneNumber,
-        set: {
-          consentStatus: values.consentStatus,
-          consentSource: values.consentSource,
-          consentAt: values.consentAt,
-          dnd: values.dnd,
-          dndSource: values.dndSource,
-          dndAt: values.dndAt,
-          optedOutAt: values.optedOutAt,
-          optOutReason: values.optOutReason,
-          updatedAt: now,
-        },
-      })
-      .returning();
-
-    if (values.optedOutAt || values.dnd) {
-      await this.addPhoneSuppression(
-        input.phoneNumber,
-        values.optOutReason ?? values.dndSource ?? 'preference_update',
-      );
-    }
-
-    return rows[0]!;
-  }
-
   async recordExplicitOptOut(phoneNumber: string, reason: string): Promise<void> {
-    await this.upsertCallPreference({
-      phoneNumber,
-      optedOut: true,
-      optOutReason: reason,
-      dnd: true,
-      dndSource: 'owner_verbal_opt_out',
-    });
     await this.addPhoneSuppression(phoneNumber, reason);
   }
 }
@@ -626,7 +530,7 @@ export async function safeRecordExplicitOptOut(
   try {
     await getCallLogRepository().recordExplicitOptOut(phoneNumber, reason);
   } catch (error) {
-    callWarn(`[CALL] preference.opt_out_fail phone=${phoneNumber} error=${error}`);
+    callWarn(`[CALL] suppression.opt_out_fail phone=${phoneNumber} error=${error}`);
   }
 }
 
