@@ -19,6 +19,12 @@ export const propertyAvailabilityRequestSchema = z.object({
   caller_name: z.string().trim().optional(),
 });
 
+export const suppressionRequestSchema = z.object({
+  phone_number: e164Phone,
+  reason: z.string().trim().min(1).max(500),
+});
+
 export type PropertyAvailabilityRequest = z.infer<
   typeof propertyAvailabilityRequestSchema
 >;
+export type SuppressionRequest = z.infer<typeof suppressionRequestSchema>;

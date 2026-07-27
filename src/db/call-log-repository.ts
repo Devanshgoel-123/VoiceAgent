@@ -11,6 +11,7 @@ import type { DispatchResult } from '../jobs/models.js';
 import { getDb, isDatabaseEnabled } from './client.js';
 import {
   callLogs,
+  suppressedNumbers,
   type CallLogRow,
 } from './schema.js';
 
@@ -419,6 +420,30 @@ export class CallLogRepository {
 
     return recentRows[0] ?? null;
   }
+
+  async isPhoneSuppressed(phoneNumber: string): Promise<boolean> {
+    if (!isDatabaseEnabled()) return false;
+
+    const db = getDb();
+    const rows = await db
+      .select({ id: suppressedNumbers.id })
+      .from(suppressedNumbers)
+      .where(eq(suppressedNumbers.phoneNumber, phoneNumber))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async addPhoneSuppression(phoneNumber: string, reason: string): Promise<boolean> {
+    if (!isDatabaseEnabled()) return false;
+
+    const db = getDb();
+    const inserted = await db
+      .insert(suppressedNumbers)
+      .values({ phoneNumber, reason })
+      .onConflictDoNothing({ target: suppressedNumbers.phoneNumber })
+      .returning({ id: suppressedNumbers.id });
+    return inserted.length > 0;
+  }
 }
 
 let singleton: CallLogRepository | null = null;
@@ -493,6 +518,17 @@ export async function safeUpsertDispatched(
     await getCallLogRepository().upsertDispatched(job, dispatch);
   } catch (error) {
     callWarn(`[CALL] call_log.dispatch_fail job=${job.jobId} error=${error}`);
+  }
+}
+
+export async function safeAddPhoneSuppression(
+  phoneNumber: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await getCallLogRepository().addPhoneSuppression(phoneNumber, reason);
+  } catch (error) {
+    callWarn(`[CALL] suppression.add_fail phone=${phoneNumber} error=${error}`);
   }
 }
 

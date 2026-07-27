@@ -1,6 +1,9 @@
 import type { Settings } from '../config/settings.js';
 
-export type ComplianceBlockReason = 'outside_calling_hours' | 'database_required';
+export type ComplianceBlockReason =
+  | 'outside_calling_hours'
+  | 'suppressed'
+  | 'database_required';
 
 export interface ComplianceDecision {
   allowed: boolean;
@@ -43,6 +46,7 @@ export function isWithinCallingHours(
 
 export function evaluateDispatchCompliance(input: {
   settings: Settings;
+  isSuppressed: boolean;
   now?: Date;
 }): ComplianceDecision {
   if (!isWithinCallingHours(input.settings, input.now)) {
@@ -50,6 +54,14 @@ export function evaluateDispatchCompliance(input: {
       allowed: false,
       reason: 'outside_calling_hours',
       detail: `Calls are only allowed between ${input.settings.callingHoursStartHour}:00 and ${input.settings.callingHoursEndHour}:00 ${input.settings.callingHoursTimeZone}`,
+    };
+  }
+
+  if (input.isSuppressed) {
+    return {
+      allowed: false,
+      reason: 'suppressed',
+      detail: 'Phone number is on the suppression list',
     };
   }
 

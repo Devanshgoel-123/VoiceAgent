@@ -3,6 +3,9 @@ import request from 'supertest';
 import type { Settings } from '../src/config/settings.js';
 
 const mockSecureDispatch = vi.fn();
+const mockAddPhoneSuppression = vi.fn(async () => true);
+const mockGetByJobId = vi.fn(async () => null);
+const mockListRecent = vi.fn(async () => []);
 
 vi.mock('../src/jobs/dispatch-pipeline.js', () => ({
   secureDispatchPropertyAvailabilityCall: (...args: unknown[]) =>
@@ -12,8 +15,9 @@ vi.mock('../src/jobs/dispatch-pipeline.js', () => ({
 vi.mock('../src/db/call-log-repository.js', () => ({
   isDatabaseEnabled: () => true,
   getCallLogRepository: vi.fn(() => ({
-    getByJobId: vi.fn(async () => null),
-    listRecent: vi.fn(async () => []),
+    getByJobId: mockGetByJobId,
+    listRecent: mockListRecent,
+    addPhoneSuppression: mockAddPhoneSuppression,
   })),
 }));
 
@@ -45,6 +49,7 @@ export function testSettings(overrides: Partial<Settings> = {}): Settings {
     callingHoursTimeZone: 'Asia/Kolkata',
     callDataRetentionDays: 15,
     apiReadRateLimitPerMinute: 60,
+    apiSuppressionWriteRateLimitPerMinute: 10,
     voiceCronIntervalMs: 900_000,
     appEnv: 'developer',
     callDebugLogging: false,
@@ -55,6 +60,12 @@ export function testSettings(overrides: Partial<Settings> = {}): Settings {
 describe('API server', () => {
   beforeEach(() => {
     mockSecureDispatch.mockReset();
+    mockAddPhoneSuppression.mockReset();
+    mockGetByJobId.mockReset();
+    mockListRecent.mockReset();
+    mockAddPhoneSuppression.mockResolvedValue(true);
+    mockGetByJobId.mockResolvedValue(null);
+    mockListRecent.mockResolvedValue([]);
     mockSecureDispatch.mockResolvedValue({
       ok: true,
       result: {
@@ -217,6 +228,75 @@ describe('API server', () => {
     expect((await get()).status).toBe(200);
 
     const limited = await get();
+    expect(limited.status).toBe(429);
+    expect(limited.body.error).toBe('Too many requests');
+    expect(limited.headers['ratelimit-limit']).toBe('2');
+  });
+
+  it('requires auth for suppression writes', async () => {
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings());
+
+    const res = await request(app).post('/suppressed-numbers').send({
+      phone_number: '+919876543210',
+      reason: 'manual_block',
+    });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('adds suppression entries through the external API', async () => {
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings());
+
+    const res = await request(app)
+      .post('/suppressed-numbers')
+      .set('Authorization', 'Bearer test-secret')
+      .send({
+        phone_number: '+919876543210',
+        reason: 'manual_block',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ ok: true, created: true });
+    expect(mockAddPhoneSuppression).toHaveBeenCalledWith('+919876543210', 'manual_block');
+  });
+
+  it('skips duplicate suppression entries without error', async () => {
+    mockAddPhoneSuppression.mockResolvedValueOnce(false);
+
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings());
+
+    const res = await request(app)
+      .post('/suppressed-numbers')
+      .set('Authorization', 'Bearer test-secret')
+      .send({
+        phone_number: '+919876543210',
+        reason: 'manual_block',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, created: false });
+  });
+
+  it('rate limits suppression writes', async () => {
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings(), { suppressionWriteRateLimitMax: 2 });
+
+    const post = () =>
+      request(app)
+        .post('/suppressed-numbers')
+        .set('Authorization', 'Bearer test-secret')
+        .send({
+          phone_number: '+919876543210',
+          reason: 'manual_block',
+        });
+
+    expect((await post()).status).toBe(201);
+    expect((await post()).status).toBe(201);
+
+    const limited = await post();
     expect(limited.status).toBe(429);
     expect(limited.body.error).toBe('Too many requests');
     expect(limited.headers['ratelimit-limit']).toBe('2');

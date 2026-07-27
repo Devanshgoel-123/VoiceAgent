@@ -65,6 +65,7 @@ describe('dispatch compliance', () => {
     const noonIst = new Date('2026-07-24T06:30:00.000Z');
     const decision = evaluateDispatchCompliance({
       settings: settings(),
+      isSuppressed: false,
       now: noonIst,
     });
     expect(decision.allowed).toBe(true);
@@ -74,9 +75,21 @@ describe('dispatch compliance', () => {
     const eveningIst = new Date('2026-07-24T15:30:00.000Z');
     const decision = evaluateDispatchCompliance({
       settings: settings(),
+      isSuppressed: false,
       now: eveningIst,
     });
     expect(decision.allowed).toBe(false);
     expect(decision.reason).toBe('outside_calling_hours');
+  });
+
+  it('blocks suppressed numbers during allowed hours', () => {
+    const noonIst = new Date('2026-07-24T06:30:00.000Z');
+    const decision = evaluateDispatchCompliance({
+      settings: settings(),
+      isSuppressed: true,
+      now: noonIst,
+    });
+    expect(decision.allowed).toBe(false);
+    expect(decision.reason).toBe('suppressed');
   });
 });
