@@ -53,6 +53,7 @@ describe('secureDispatchPropertyAvailabilityCall', () => {
       isDatabaseEnabled: () => true,
       ReserveDispatchError,
       getCallLogRepository: () => ({
+        isPhoneSuppressed: vi.fn(async () => false),
         reserveDispatchSlot,
         attachDispatch: vi.fn(),
         releaseReservation: vi.fn(),
@@ -93,6 +94,7 @@ describe('secureDispatchPropertyAvailabilityCall', () => {
       isDatabaseEnabled: () => true,
       ReserveDispatchError,
       getCallLogRepository: () => ({
+        isPhoneSuppressed: vi.fn(async () => false),
         reserveDispatchSlot,
         attachDispatch,
         releaseReservation: vi.fn(),
@@ -130,5 +132,48 @@ describe('secureDispatchPropertyAvailabilityCall', () => {
       roomName: 'room-1',
       dispatchId: 'dispatch-1',
     });
+  });
+
+  it('blocks dispatch when phone is suppressed', async () => {
+    const reserveDispatchSlot = vi.fn(async () => ({ jobId: 'job-1' }));
+
+    vi.doMock('../src/db/call-log-repository.js', () => ({
+      isDatabaseEnabled: () => true,
+      ReserveDispatchError,
+      getCallLogRepository: () => ({
+        isPhoneSuppressed: vi.fn(async () => true),
+        reserveDispatchSlot,
+        attachDispatch: vi.fn(),
+        releaseReservation: vi.fn(),
+      }),
+    }));
+
+    const { secureDispatchPropertyAvailabilityCall } = await import(
+      '../src/jobs/dispatch-pipeline.js'
+    );
+
+    const job = createPropertyAvailabilityJob({
+      owner: { name: 'Ramesh', phoneNumber: '+919876543210' },
+      property: { propertyId: 'P1', address: '42 Indiranagar' },
+    });
+
+    const dispatcher = {
+      dispatchPropertyAvailabilityCall: vi.fn(),
+    };
+
+    const outcome = await secureDispatchPropertyAvailabilityCall(
+      job,
+      settings(),
+      dispatcher as never,
+    );
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.failure.kind).toBe('compliance');
+      expect(outcome.failure.status).toBe(403);
+      expect(outcome.failure.reason).toBe('suppressed');
+    }
+    expect(reserveDispatchSlot).not.toHaveBeenCalled();
+    expect(dispatcher.dispatchPropertyAvailabilityCall).not.toHaveBeenCalled();
   });
 });

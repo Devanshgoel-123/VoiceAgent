@@ -406,8 +406,9 @@ Each call is tracked in `call_logs` with:
 | `COMPANY_NAME` | No | Brand name (default: `Galynest`) |
 | `CALLER_NAME` | No | Spoken caller name (default: `Jitesh`); API `caller_name` can override it per call |
 | `API_HOST` / `API_PORT` | No | Trigger API bind address |
-| `API_SECRET_KEY` | Yes (API) | Bearer / `x-api-key` secret for `/calls/*` |
+| `API_SECRET_KEY` | Yes (API) | Bearer / `x-api-key` secret for `/calls/*` and `POST /suppressed-numbers` |
 | `API_READ_RATE_LIMIT_PER_MINUTE` | No | Per-IP limit for `GET /calls/results*` (default `60`/min) |
+| `API_SUPPRESSION_WRITE_RATE_LIMIT_PER_MINUTE` | No | Per-IP limit for `POST /suppressed-numbers` (default `10`/min) |
 | `DISPATCH_COOLDOWN_MS` | No | Min ms between same property+phone (default 24h) |
 | `CALLING_HOURS_START_HOUR` / `CALLING_HOURS_END_HOUR` | No | Quiet-hours window (default 9–20) |
 | `CALLING_HOURS_TZ` | No | Time zone for calling hours (default `Asia/Kolkata`) |

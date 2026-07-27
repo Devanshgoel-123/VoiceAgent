@@ -2,7 +2,10 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import type { Settings } from '../config/settings.js';
 import { createApiKeyMiddleware } from './auth-middleware.js';
-import { propertyAvailabilityRequestSchema } from './schemas.js';
+import {
+  propertyAvailabilityRequestSchema,
+  suppressionRequestSchema,
+} from './schemas.js';
 import { CallJobDispatcher } from '../jobs/dispatcher.js';
 import { secureDispatchPropertyAvailabilityCall } from '../jobs/dispatch-pipeline.js';
 import {
@@ -16,6 +19,7 @@ import { listAgents } from '../agents/registry.js';
 /** Test-only overrides — production uses settings defaults. */
 export interface CreateAppOptions {
   readRateLimitMax?: number;
+  suppressionWriteRateLimitMax?: number;
 }
 
 export function createApp(
@@ -32,6 +36,15 @@ export function createApp(
   const callReadLimiter = rateLimit({
     windowMs: 60_000,
     max: options.readRateLimitMax ?? settings.apiReadRateLimitPerMinute,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests' },
+  });
+  const suppressionWriteLimiter = rateLimit({
+    windowMs: 60_000,
+    max:
+      options.suppressionWriteRateLimitMax ??
+      settings.apiSuppressionWriteRateLimitPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests' },
@@ -106,6 +119,38 @@ export function createApp(
       res.status(500).json({ error: String(error) });
     }
   });
+
+  app.post(
+    '/suppressed-numbers',
+    requireApiKey,
+    suppressionWriteLimiter,
+    async (req, res) => {
+      if (!isDatabaseEnabled()) {
+        res.status(503).json({ error: 'DATABASE_URL is required for suppression writes' });
+        return;
+      }
+
+      const parsed = suppressionRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({
+          error: 'Invalid request body',
+          details: parsed.error.flatten(),
+        });
+        return;
+      }
+
+      try {
+        const created = await getCallLogRepository().addPhoneSuppression(
+          parsed.data.phone_number,
+          parsed.data.reason,
+        );
+        res.status(created ? 201 : 200).json({ ok: true, created });
+      } catch (error) {
+        console.error('Failed to add suppression entry:', error);
+        res.status(500).json({ error: String(error) });
+      }
+    },
+  );
 
   app.get('/calls/results/:jobId', requireApiKey, callReadLimiter, async (req, res) => {
     if (isDatabaseEnabled()) {
