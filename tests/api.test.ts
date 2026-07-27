@@ -43,7 +43,7 @@ export function testSettings(overrides: Partial<Settings> = {}): Settings {
     llmModel: 'sarvam-105b',
     defaultLanguage: 'en-IN',
     telephonySampleRate: 8000,
-    dispatchCooldownMs: 86_400_000,
+    dispatchCooldownMs: 7 * 24 * 60 * 60 * 1000,
     callingHoursStartHour: 9,
     callingHoursEndHour: 20,
     callingHoursTimeZone: 'Asia/Kolkata',

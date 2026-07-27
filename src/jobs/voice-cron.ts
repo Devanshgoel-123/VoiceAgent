@@ -1,14 +1,24 @@
+import {
+  VOICE_CRON_PROPERTY_STATUSES,
+  VOICE_RECONTACT_COOLDOWN_MS,
+} from '../config/call-config.js';
 import type { Settings } from '../config/settings.js';
 import {
   createGullyNestClientFromSettings,
   type GullyNestClient,
 } from '../integrations/gullynest/client.js';
-import type { VoiceAdminProperty } from '../integrations/gullynest/types.js';
+import type {
+  ListVoicePropertiesQuery,
+  VoiceAdminProperty,
+} from '../integrations/gullynest/types.js';
 import {
   secureDispatchPropertyAvailabilityCall,
   type SecureDispatchResult,
 } from './dispatch-pipeline.js';
 import { createPropertyAvailabilityJob } from './models.js';
+
+/** Listing statuses the cron is allowed to dial (must match fetch query). */
+export const CALLABLE_VOICE_STATUSES = VOICE_CRON_PROPERTY_STATUSES;
 
 export interface VoiceCronDeps {
   client: GullyNestClient;
@@ -16,6 +26,7 @@ export interface VoiceCronDeps {
     job: ReturnType<typeof createPropertyAvailabilityJob>,
     settings: Settings,
   ) => Promise<SecureDispatchResult>;
+  now?: Date;
 }
 
 export interface VoiceCronItemResult {
@@ -64,9 +75,72 @@ export function propertyToJobInput(
   };
 }
 
+/** ISO cutoff for GullyNest `contactedBefore` (never contacted, or older than cooldown). */
+export function voiceContactedBeforeCutoff(now: Date = new Date()): string {
+  return new Date(now.getTime() - VOICE_RECONTACT_COOLDOWN_MS).toISOString();
+}
+
+export function isCallableVoiceStatus(
+  status: VoiceAdminProperty['status'],
+): boolean {
+  return (CALLABLE_VOICE_STATUSES as readonly string[]).includes(status);
+}
+
+/** True when GullyNest last-contact is still inside the recontact cooldown window. */
+export function wasContactedWithinCooldown(
+  property: Pick<VoiceAdminProperty, 'voiceLastContactedAt'>,
+  now: Date = new Date(),
+  cooldownMs: number = VOICE_RECONTACT_COOLDOWN_MS,
+): boolean {
+  if (!property.voiceLastContactedAt) return false;
+  const contactedAt = Date.parse(property.voiceLastContactedAt);
+  if (!Number.isFinite(contactedAt)) return false;
+  return now.getTime() - contactedAt < cooldownMs;
+}
+
+function dedupePropertiesById(
+  properties: VoiceAdminProperty[],
+): VoiceAdminProperty[] {
+  const seen = new Set<string>();
+  const unique: VoiceAdminProperty[] = [];
+  for (const property of properties) {
+    if (seen.has(property.id)) continue;
+    seen.add(property.id);
+    unique.push(property);
+  }
+  return unique;
+}
+
 /**
- * One cron tick: fetch properties from GullyNest (API decides which rows to return)
- * and dispatch an outbound job for each callable row.
+ * Fetch LIVE + SOFT_STALE properties that were never contacted, or last contacted
+ * before the 7-day recontact cutoff. Each status is requested in its own API call
+ * because GullyNest defaults to LIVE when `status` is omitted.
+ */
+export async function fetchCallableVoiceProperties(
+  client: GullyNestClient,
+  now: Date = new Date(),
+): Promise<VoiceAdminProperty[]> {
+  const contactedBefore = voiceContactedBeforeCutoff(now);
+  const baseQuery: Omit<ListVoicePropertiesQuery, 'page' | 'status'> = {
+    contactedBefore,
+  };
+
+  const batches = await Promise.all(
+    VOICE_CRON_PROPERTY_STATUSES.map((status) =>
+      client.listAllProperties({ ...baseQuery, status }),
+    ),
+  );
+
+  return dedupePropertiesById(batches.flat()).filter((property) => {
+    if (!isCallableVoiceStatus(property.status)) return false;
+    if (wasContactedWithinCooldown(property, now)) return false;
+    return true;
+  });
+}
+
+/**
+ * One cron tick: fetch LIVE / SOFT_STALE properties due for a call and dispatch
+ * an outbound job for each callable row.
  */
 export async function runVoiceCronTick(
   settings: Settings,
@@ -82,11 +156,32 @@ export async function runVoiceCronTick(
 
   const dispatch =
     deps?.dispatch ?? secureDispatchPropertyAvailabilityCall;
+  const now = deps?.now ?? new Date();
 
-  const properties = await client.listAllProperties();
+  const properties = await fetchCallableVoiceProperties(client, now);
   const items: VoiceCronItemResult[] = [];
 
   for (const property of properties) {
+    if (!isCallableVoiceStatus(property.status)) {
+      items.push({
+        propertyId: property.id,
+        phoneNumber: property.listerPhone ?? undefined,
+        status: 'skipped',
+        reason: `status_${property.status.toLowerCase()}`,
+      });
+      continue;
+    }
+
+    if (wasContactedWithinCooldown(property, now)) {
+      items.push({
+        propertyId: property.id,
+        phoneNumber: property.listerPhone ?? undefined,
+        status: 'skipped',
+        reason: 'contacted_within_week',
+      });
+      continue;
+    }
+
     const input = propertyToJobInput(property, settings);
     if (!input) {
       items.push({

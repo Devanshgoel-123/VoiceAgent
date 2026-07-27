@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { DEFAULT_DISPATCH_COOLDOWN_MS } from './call-config.js';
 
 export type TtsProvider = 'sarvam' | 'elevenlabs';
 export type ElevenLabsTransport = 'http' | 'websocket';
@@ -139,7 +140,7 @@ export function getSettings(): Settings {
     telephonySampleRate: parsePositiveInt(process.env.TELEPHONY_SAMPLE_RATE, 8000),
     dispatchCooldownMs: parsePositiveInt(
       process.env.DISPATCH_COOLDOWN_MS,
-      86_400_000,
+      DEFAULT_DISPATCH_COOLDOWN_MS,
     ),
     callingHoursStartHour: parsePositiveInt(process.env.CALLING_HOURS_START_HOUR, 9),
     callingHoursEndHour: parsePositiveInt(process.env.CALLING_HOURS_END_HOUR, 20),
