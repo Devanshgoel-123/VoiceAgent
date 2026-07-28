@@ -32,7 +32,8 @@ export interface VoiceAdminPropertiesResponse {
 }
 
 export interface ListVoicePropertiesQuery {
-  status?: VoicePropertyStatus;
+  /** Comma list of VoicePropertyStatus values, or 'ALL' — matches listingKind/bhk's comma-list shape. */
+  status?: string;
   listingKind?: string;
   bhk?: string;
   rentMin?: number;
@@ -61,4 +62,6 @@ export interface GullyNestClientConfig {
   apiSecret: string;
   /** Optional fetch override for tests. */
   fetchImpl?: typeof fetch;
+  /** Abort a request after this long (default 10s). */
+  requestTimeoutMs?: number;
 }
