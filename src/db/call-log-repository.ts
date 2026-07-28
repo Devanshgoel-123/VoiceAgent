@@ -137,7 +137,7 @@ export class CallLogRepository {
           ),
         )
         .limit(1);
-
+      console.log('activeRows', activeRows);
       if (activeRows[0]) {
         throw new ReserveDispatchError(
           'conflict_active',

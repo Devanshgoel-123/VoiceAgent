@@ -5,11 +5,13 @@ import type { VoiceCallOutcomeAction } from './types.js';
  * Maps a completed voice call snapshot to a GullyNest call-outcome action.
  * - yes → available (still listed)
  * - no → stale (confirmed unavailable)
+ * - ownership mismatch → stale (invalid owner/listing contact)
  * - no-answer / unclear / failed / other → soft_stale
  */
 export function mapSnapshotToCallOutcomeAction(
-  snapshot: Pick<CallLogSnapshot, 'ownerOutcome' | 'status'>,
+  snapshot: Pick<CallLogSnapshot, 'ownerOutcome' | 'status' | 'metadata'>,
 ): VoiceCallOutcomeAction {
+  if (snapshot.metadata.call_end_reason === 'ownership_mismatch') return 'stale';
   if (snapshot.ownerOutcome === 'yes') return 'available';
   if (snapshot.ownerOutcome === 'no') return 'stale';
   return 'soft_stale';

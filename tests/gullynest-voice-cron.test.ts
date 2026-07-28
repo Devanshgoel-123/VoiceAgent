@@ -66,6 +66,17 @@ describe('mapSnapshotToCallOutcomeAction', () => {
     );
   });
 
+  it('maps an ownership mismatch to stale so it is not called again', () => {
+    expect(
+      mapSnapshotToCallOutcomeAction(
+        snapshot({
+          ownerOutcome: 'other',
+          metadata: { call_end_reason: 'ownership_mismatch' },
+        }),
+      ),
+    ).toBe('stale');
+  });
+
   it('maps other / no_answer to soft_stale', () => {
     expect(
       mapSnapshotToCallOutcomeAction(

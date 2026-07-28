@@ -54,7 +54,14 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
       languageCode,
       mode: 'transcribe',
       flushSignal: true,
-      highVadSensitivity: true,
+      highVadSensitivity: false,
+      positiveSpeechThreshold: 0.7,
+      negativeSpeechThreshold: 0.3,
+      minSpeechFrames: 3,
+      negativeFramesCount: 3,
+      negativeFramesWindow: 15,
+      startSpeechVolumeThreshold: -40,
+      preSpeechPadFrames: 3,
     });
   }
 
