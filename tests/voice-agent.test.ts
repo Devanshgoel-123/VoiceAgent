@@ -87,6 +87,37 @@ describe('LanguageManager', () => {
     ).toBe('en-IN');
   });
 
+  it('recognizes Gujarati as unsupported instead of passing it to TTS', () => {
+    expect(
+      LanguageManager.detectUnsupportedLanguage(
+        'તમે કોણ બોલો છો મારા નામ?',
+        'gu-IN',
+      ),
+    ).toBe('gu-IN');
+    expect(
+      LanguageManager.detectUnsupportedLanguage('શું ખબર?', null),
+    ).toBe('gu-IN');
+  });
+
+  it.each([
+    'क्या आप हिंदी में बात कर सकते हो?',
+    'आप कौन बोल रहे हो?',
+    'તમે કોણ બોલો છો મારા નામ?',
+    'શું ખબર?',
+    'Who is this speaking?',
+    'What is Galynest?',
+  ])('does not fast-path question "%s" as yes/no', (text) => {
+    expect(LanguageManager.isShortYesNo(text)).toBe(false);
+  });
+
+  it('does not fast-path ambiguous politeness fragments', () => {
+    expect(LanguageManager.isShortYesNo('ji')).toBe(false);
+    expect(LanguageManager.isShortYesNo('okay')).toBe(false);
+    expect(LanguageManager.isShortYesNo('ha ji')).toBe(false);
+    expect(LanguageManager.isShortYesNo('haan')).toBe(true);
+    expect(LanguageManager.isShortYesNo('no')).toBe(true);
+  });
+
   it('does not flap to Kannada from STT alone on English speech', () => {
     const mgr = new LanguageManager('en-IN');
     expect(
