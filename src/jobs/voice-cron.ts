@@ -27,6 +27,8 @@ export interface VoiceCronDeps {
     settings: Settings,
   ) => Promise<SecureDispatchResult>;
   now?: Date;
+  /** Cap on properties fetched + processed in one tick (default: unlimited). */
+  maxProperties?: number;
 }
 
 export interface VoiceCronItemResult {
@@ -113,29 +115,34 @@ function dedupePropertiesById(
 
 /**
  * Fetch LIVE + SOFT_STALE properties that were never contacted, or last contacted
- * before the 7-day recontact cutoff. Each status is requested in its own API call
- * because GullyNest defaults to LIVE when `status` is omitted.
+ * before the 7-day recontact cutoff. One request — GullyNest's `status` param takes
+ * a comma list, so both statuses are requested together instead of one call each.
  */
 export async function fetchCallableVoiceProperties(
   client: GullyNestClient,
   now: Date = new Date(),
+  maxProperties?: number,
 ): Promise<VoiceAdminProperty[]> {
   const contactedBefore = voiceContactedBeforeCutoff(now);
-  const baseQuery: Omit<ListVoicePropertiesQuery, 'page' | 'status'> = {
+  const query: Omit<ListVoicePropertiesQuery, 'page'> = {
+    status: VOICE_CRON_PROPERTY_STATUSES.join(','),
     contactedBefore,
   };
 
-  const batches = await Promise.all(
-    VOICE_CRON_PROPERTY_STATUSES.map((status) =>
-      client.listAllProperties({ ...baseQuery, status }),
-    ),
-  );
+  const fetched =
+    maxProperties === undefined
+      ? await client.listAllProperties(query)
+      : await client.listAllProperties(query, maxProperties);
 
-  return dedupePropertiesById(batches.flat()).filter((property) => {
+  const properties = dedupePropertiesById(fetched).filter((property) => {
     if (!isCallableVoiceStatus(property.status)) return false;
     if (wasContactedWithinCooldown(property, now)) return false;
     return true;
   });
+
+  return typeof maxProperties === 'number'
+    ? properties.slice(0, maxProperties)
+    : properties;
 }
 
 /**
@@ -158,8 +165,15 @@ export async function runVoiceCronTick(
     deps?.dispatch ?? secureDispatchPropertyAvailabilityCall;
   const now = deps?.now ?? new Date();
 
-  const properties = await fetchCallableVoiceProperties(client, now);
+  const properties = await fetchCallableVoiceProperties(
+    client,
+    now,
+    deps?.maxProperties,
+  );
   const items: VoiceCronItemResult[] = [];
+  /** Same owner can list multiple properties — dispatch at most one call per phone per tick;
+   *  the rest queue for a later tick instead of ringing the same person back-to-back. */
+  const dispatchedPhones = new Set<string>();
 
   for (const property of properties) {
     if (!isCallableVoiceStatus(property.status)) {
@@ -192,6 +206,17 @@ export async function runVoiceCronTick(
       });
       continue;
     }
+
+    if (dispatchedPhones.has(input.owner.phoneNumber)) {
+      items.push({
+        propertyId: property.id,
+        phoneNumber: input.owner.phoneNumber,
+        status: 'skipped',
+        reason: 'queued_same_phone_this_tick',
+      });
+      continue;
+    }
+    dispatchedPhones.add(input.owner.phoneNumber);
 
     const job = createPropertyAvailabilityJob(input);
     try {

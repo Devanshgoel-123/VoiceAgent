@@ -7,21 +7,9 @@ import type { VoicePipelineProvider } from '../adapters/voice-pipeline.js';
 import { OWNER_OPENING_WAIT_MS } from '../config/call-config.js';
 import type { Settings } from '../config/settings.js';
 import { getSettings } from '../config/settings.js';
-import {
-  safeCompleteCallLog,
-  safeMarkCallAnswered,
-  safeMarkCallFailed,
-  safeMarkCallInProgress,
-  safeMarkCallNoAnswer,
-} from '../db/call-log-repository.js';
-import { createGullyNestClientFromSettings } from '../integrations/gullynest/client.js';
-import {
-  mapSnapshotToCallOutcomeAction,
-  shouldReportCallOutcome,
-} from '../integrations/gullynest/outcome-map.js';
+import { safeMarkCallAnswered, safeMarkCallInProgress } from '../db/call-log-repository.js';
+import { persistCallResult } from '../jobs/call-outcome-persistence.js';
 import { CallSessionRecord } from '../jobs/call-session-record.js';
-import { saveCallResultSnapshot } from '../jobs/persist-call-result.js';
-import { purgeExpiredCallData } from '../jobs/retention.js';
 import { callError, callInfo, callWarn } from './call-logger.js';
 import { registerProcessSafetyHandlers } from './process-safety.js';
 import { isNoAnswerError } from './telephony-errors.js';
@@ -57,6 +45,12 @@ export function createWorkerConfig(
       const logger = log().child({ room: ctx.room.name });
       const metadata = parseMetadata(ctx.job.metadata);
       let callRecord: CallSessionRecord | undefined;
+      let outcomeReported = false;
+      const persist = async (snapshot: Parameters<typeof persistCallResult>[0]) => {
+        if (outcomeReported) return;
+        outcomeReported = true;
+        await persistCallResult(snapshot, settings, logger);
+      };
 
       try {
         callInfo(`call: start job=${metadata.job_id ?? ctx.job.id}`, logger);
@@ -101,36 +95,7 @@ export function createWorkerConfig(
           participantIdentity,
           logger,
           callRecord,
-          onPersist: async (snapshot) => {
-            await safeCompleteCallLog(snapshot);
-            try {
-              await saveCallResultSnapshot(snapshot);
-            } catch (error) {
-              callWarn(`file snapshot failed job=${snapshot.jobId}: ${error}`, logger);
-            }
-
-            const gullyClient = createGullyNestClientFromSettings(settings);
-            if (gullyClient && shouldReportCallOutcome(snapshot) && snapshot.propertyId) {
-              const action = mapSnapshotToCallOutcomeAction(snapshot);
-              try {
-                await gullyClient.reportCallOutcome(snapshot.propertyId, action);
-                callInfo(
-                  `gullynest outcome reported property=${snapshot.propertyId} action=${action}`,
-                  logger,
-                );
-              } catch (error) {
-                callWarn(
-                  `gullynest outcome report failed property=${snapshot.propertyId}: ${error}`,
-                  logger,
-                );
-              }
-            }
-
-            // Best-effort retention sweep (also run via `npm run db:purge-expired`).
-            void purgeExpiredCallData(settings.callDataRetentionDays).catch((error) => {
-              callWarn(`retention purge failed: ${error}`, logger);
-            });
-          },
+          onPersist: persist,
         });
 
         callSession.createSession();
@@ -142,7 +107,7 @@ export function createWorkerConfig(
             const message = 'SIP_OUTBOUND_TRUNK_ID is not configured';
             callError(`call: ${message}`, logger);
             callRecord.markFailed(message);
-            await safeMarkCallFailed(callRecord.jobId, message);
+            await persist(callRecord.finalize(null));
             ctx.shutdown();
             return;
           }
@@ -187,11 +152,10 @@ export function createWorkerConfig(
             const message = String(error);
             if (isNoAnswerError(error)) {
               callRecord.markNoAnswer(message);
-              await safeMarkCallNoAnswer(callRecord.jobId, message);
             } else {
               callRecord.markFailed(message);
-              await safeMarkCallFailed(callRecord.jobId, message);
             }
+            await persist(callRecord.finalize(null));
             ctx.shutdown();
             return;
           }
@@ -203,7 +167,7 @@ export function createWorkerConfig(
         if (callRecord) {
           const message = String(error);
           callRecord.markFailed(message);
-          await safeMarkCallFailed(callRecord.jobId, message);
+          await persist(callRecord.finalize(null));
         }
         ctx.shutdown();
       }
