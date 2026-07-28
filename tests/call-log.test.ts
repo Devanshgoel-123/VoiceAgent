@@ -49,6 +49,22 @@ describe('CallSessionRecord', () => {
     expect(snapshot.success).toBe(true);
     expect(snapshot.status).toBe('completed');
   });
+
+  it('persists an ownership mismatch as a machine-readable call reason', () => {
+    const record = new CallSessionRecord({ job_id: 'job-3' });
+    record.markInProgress();
+    record.markAnswered();
+    record.recordEndReason('ownership_mismatch');
+    record.recordOwnerOutcome(
+      'other',
+      'Ownership mismatch: the callee stated they do not own this property.',
+    );
+
+    const snapshot = record.finalize();
+    expect(snapshot.ownerOutcome).toBe('other');
+    expect(snapshot.transcriptSummary).toContain('Ownership mismatch');
+    expect(snapshot.metadata.call_end_reason).toBe('ownership_mismatch');
+  });
 });
 
 describe('summarizeUnclearCall', () => {

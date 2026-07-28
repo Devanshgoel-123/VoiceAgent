@@ -4,6 +4,8 @@ import type { CallLifecycle } from '../../adapters/livekit-call-session.js';
 import { openingForLanguage } from '../../adapters/closing-messages.js';
 import { getSettings } from '../../config/settings.js';
 import { callError } from '../../core/call-logger.js';
+import { LanguageManager } from '../../core/language-manager.js';
+import { isOwnershipMismatch } from '../../core/owner-intent.js';
 import type { CallMetadata } from '../../core/types.js';
 import type { YesNoAnswer } from '../../jobs/models.js';
 import { registerAgent } from '../registry.js';
@@ -104,9 +106,12 @@ const UNCERTAIN_AVAILABILITY_PATTERNS = [
 const QUESTION_PATTERNS = [
   /\?/,
   /^(?:who|what|why|when|where|how|which|can|could|would|are|is|do|does)\b/i,
-  /(?:कौन|क्या|क्यों|कब|कहाँ|कैसे)/u,
-  /(?:કોણ|શું|કેમ|ક્યારે|ક્યાં)/u,
+  /(?:^|[\s।,.!?])(?:कौन|क्या|क्यों|कब|कहाँ|कैसे)(?=$|[\s।,.!?])/u,
+  /(?:^|[\s।,.!?])(?:કોણ|શું|કેમ|ક્યારે|ક્યાં)(?=$|[\s।,.!?])/u,
 ];
+
+const AVAILABILITY_CONTEXT =
+  /available|unavailable|still\s+(?:listed|vacant)|rented|leased|occupied|sold|उपलब्ध|किराये\s+पर|लಭ್ಯ|ಬಾಡಿಗೆ/u;
 
 /**
  * Tool-call guard: prompts can guide the model, but only code should decide
@@ -115,10 +120,17 @@ const QUESTION_PATTERNS = [
 export function isClearAvailabilityResponse(ownerResponse: string): boolean {
   const response = ownerResponse.trim();
   if (!response) return false;
+  if (isOwnershipMismatch(response)) return false;
   if (UNCERTAIN_AVAILABILITY_PATTERNS.some((pattern) => pattern.test(response))) {
     return false;
   }
-  return !QUESTION_PATTERNS.some((pattern) => pattern.test(response));
+  if (QUESTION_PATTERNS.some((pattern) => pattern.test(response))) return false;
+
+  if (LanguageManager.isShortYesNo(response)) return true;
+  const intent = new LanguageManager().detectFromText(response);
+  const hasClearPolarity =
+    intent.isAffirmative === true || intent.isNegative === true;
+  return hasClearPolarity && AVAILABILITY_CONTEXT.test(response.toLowerCase());
 }
 
 export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: CallLifecycle) {
@@ -131,7 +143,9 @@ export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: Cal
         ownerResponse: z.string(),
       }),
       execute: async ({ isAvailable, ownerResponse }) => {
-        if (!isClearAvailabilityResponse(ownerResponse)) {
+        const actualOwnerResponse =
+          lifecycle?.getLastOwnerTranscript()?.trim() || ownerResponse;
+        if (!isClearAvailabilityResponse(actualOwnerResponse)) {
           return (
             'Not recorded: this was a question, uncertainty, or hangup request—not a ' +
             'clear property-availability answer. Answer the owner briefly or ask once ' +
@@ -139,7 +153,12 @@ export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: Cal
           );
         }
 
-        recordAvailabilityOutcome(state, lifecycle, isAvailable, ownerResponse);
+        recordAvailabilityOutcome(
+          state,
+          lifecycle,
+          isAvailable,
+          actualOwnerResponse,
+        );
 
         if (!lifecycle) {
           callError('recordPropertyAvailability: no lifecycle — hangup will not run');

@@ -5,6 +5,7 @@ import {
   isClearAvailabilityResponse,
 } from '../src/agents/property-availability/agent.js';
 import type { CallMetadata } from '../src/core/types.js';
+import { isOwnershipMismatch } from '../src/core/owner-intent.js';
 
 describe('recordPropertyAvailability tool behavior', () => {
   it('records yes and schedules hangup once', async () => {
@@ -12,6 +13,7 @@ describe('recordPropertyAvailability tool behavior', () => {
       scheduleHangup: vi.fn(),
       setSpokenLanguage: vi.fn(),
       getCurrentLanguage: vi.fn(() => 'en-IN'),
+      getLastOwnerTranscript: vi.fn(() => 'Yes it is available'),
       recordOwnerOutcome: vi.fn(),
       recordDoNotCall: vi.fn(),
     };
@@ -54,6 +56,7 @@ describe('recordPropertyAvailability tool behavior', () => {
       scheduleHangup: vi.fn(),
       setSpokenLanguage: vi.fn(),
       getCurrentLanguage: vi.fn(() => 'en-IN'),
+      getLastOwnerTranscript: vi.fn(() => 'Please do not call me again'),
       recordOwnerOutcome: vi.fn(),
       recordDoNotCall: vi.fn(),
     };
@@ -97,6 +100,9 @@ describe('recordPropertyAvailability tool behavior', () => {
       scheduleHangup: vi.fn(),
       setSpokenLanguage: vi.fn(),
       getCurrentLanguage: vi.fn(() => 'en-IN'),
+      getLastOwnerTranscript: vi.fn(
+        () => 'I do not know about this property, please hang up.',
+      ),
       recordOwnerOutcome: vi.fn(),
       recordDoNotCall: vi.fn(),
     };
@@ -120,5 +126,50 @@ describe('recordPropertyAvailability tool behavior', () => {
     expect(lifecycle.recordOwnerOutcome).not.toHaveBeenCalled();
     expect(lifecycle.scheduleHangup).not.toHaveBeenCalled();
     expect(state.propertyAvailable).toBe('not_asked');
+  });
+
+  it('detects ownership mismatch in Hindi before asking availability again', () => {
+    expect(isOwnershipMismatch('जी ये प्रॉपर्टी मेरी नहीं है।')).toBe(true);
+    expect(
+      isOwnershipMismatch('नहीं उपलब्ध नहीं है क्योंकि यह प्रॉपर्टी मेरी नहीं है।'),
+    ).toBe(true);
+    expect(isClearAvailabilityResponse('जी ये प्रॉपर्टी मेरी नहीं है।')).toBe(false);
+  });
+
+  it('does not mistake क्योंकि for the question word क्यों', () => {
+    expect(
+      isClearAvailabilityResponse(
+        'नहीं, उपलब्ध नहीं है क्योंकि यह किराये पर चली गई है।',
+      ),
+    ).toBe(true);
+  });
+
+  it('validates the real STT transcript instead of fabricated tool text', async () => {
+    const lifecycle: CallLifecycle = {
+      scheduleHangup: vi.fn(),
+      setSpokenLanguage: vi.fn(),
+      getCurrentLanguage: vi.fn(() => 'hi-IN'),
+      getLastOwnerTranscript: vi.fn(() => 'Okay'),
+      recordOwnerOutcome: vi.fn(),
+      recordDoNotCall: vi.fn(),
+    };
+    const state = {
+      jobId: 'job-tool-test',
+      companyName: 'Galynest',
+      companyWebsite: 'galynest.com',
+      callMetadata: {} as CallMetadata,
+      propertyAvailable: 'not_asked' as const,
+      outcomeRecorded: false,
+      doNotCallRecorded: false,
+    };
+
+    const tools = buildPropertyTools(state, lifecycle);
+    const result = await tools.recordPropertyAvailability.execute({
+      isAvailable: true,
+      ownerResponse: 'Yes, the property is still available for rent.',
+    });
+
+    expect(result).toContain('Not recorded');
+    expect(lifecycle.scheduleHangup).not.toHaveBeenCalled();
   });
 });
