@@ -9,13 +9,24 @@ export interface LanguageDetectionResult {
 
 const STRONG_AFFIRMATIVE: Record<string, Set<string>> = {
   'en-IN': new Set(['yes', 'yeah', 'yep', 'yup', 'sure', 'correct', 'ok', 'okay']),
-  'hi-IN': new Set(['haan', 'han', 'ha', 'ji', 'bilkul', 'haa', 'हाँ', 'हां', 'जी']),
+  'hi-IN': new Set([
+    'haan',
+    'han',
+    'ha',
+    'ji',
+    'bilkul',
+    'haa',
+    'हाँ',
+    'हां',
+    'जी',
+    'ਹਾਂ',
+  ]),
   'kn-IN': new Set(['haudu', 'houdu', 'howdu', 'ಹೌದು', 'ಹೌದ್ರಿ', 'ಸರಿ']),
 };
 
 const STRONG_NEGATIVE: Record<string, Set<string>> = {
   'en-IN': new Set(['no', 'nope', 'nah', 'negative']),
-  'hi-IN': new Set(['nahi', 'nahin', 'na', 'mat', 'nhi', 'नहीं', 'ना']),
+  'hi-IN': new Set(['nahi', 'nahin', 'na', 'mat', 'nhi', 'नहीं', 'ना', 'ਨਹੀਂ']),
   'kn-IN': new Set(['illa', 'alla', 'beda', 'ಇಲ್ಲ', 'ಬೇಡ']),
 };
 
@@ -44,6 +55,8 @@ const FAST_PATH_YES_NO = new Set([
   'nahin',
   'nhi',
   'नहीं',
+  'ਹਾਂ',
+  'ਨਹੀਂ',
   'haudu',
   'houdu',
   'howdu',
@@ -58,12 +71,45 @@ const DEVANAGARI_RE = /[\u0900-\u097F]/g;
 const KANNADA_RE = /[\u0C80-\u0CFF]/g;
 const GUJARATI_RE = /[\u0A80-\u0AFF]/;
 const LATIN_RE = /[a-zA-Z]/g;
+const WORD_TOKEN_RE = /[\p{L}\p{M}]+/gu;
 
 const TTS_SPEAKERS: Record<string, string> = {
   'en-IN': 'aditya',
   'hi-IN': 'anand',
   'kn-IN': 'priya',
 };
+
+function wordTokens(text: string): string[] {
+  return text.toLowerCase().match(WORD_TOKEN_RE) ?? [];
+}
+
+/** Requires repeated unsupported-language evidence before disrupting a call. */
+export class UnsupportedLanguageDebouncer {
+  private candidate: string | null = null;
+  private count = 0;
+
+  observe(language: string | null): string | null {
+    if (!language) {
+      this.reset();
+      return null;
+    }
+
+    const normalized = language.toLowerCase();
+    if (this.candidate === normalized) {
+      this.count += 1;
+    } else {
+      this.candidate = normalized;
+      this.count = 1;
+    }
+
+    return this.count >= 2 ? normalized : null;
+  }
+
+  reset(): void {
+    this.candidate = null;
+    this.count = 0;
+  }
+}
 
 export class LanguageManager {
   static readonly SUPPORTED: LanguageCode[] = ['en-IN', 'hi-IN', 'kn-IN'];
@@ -112,7 +158,7 @@ export class LanguageManager {
     }
 
     // Switch to English when the utterance is clearly Latin / English.
-    if (fromScript === 'en-IN' && (trimmed.match(/\p{L}+/gu) ?? []).length >= 3) {
+    if (fromScript === 'en-IN' && wordTokens(trimmed).length >= 3) {
       return 'en-IN';
     }
 
@@ -123,7 +169,7 @@ export class LanguageManager {
       fromScript === 'en-IN' &&
       fromStt !== this.currentLanguage
     ) {
-      const tokenCount = (trimmed.match(/\p{L}+/gu) ?? []).length;
+      const tokenCount = wordTokens(trimmed).length;
       if (tokenCount >= 3) return 'en-IN';
     }
 
@@ -173,6 +219,9 @@ export class LanguageManager {
     text: string,
     sttRaw?: string | null,
   ): string | null {
+    // Auto-detect sometimes renders a Hindi yes/no in a neighboring script.
+    if (LanguageManager.isShortYesNo(text)) return null;
+
     const stt = sttRaw?.trim().toLowerCase();
     if (GUJARATI_RE.test(text)) return 'gu-IN';
     if (
@@ -187,7 +236,7 @@ export class LanguageManager {
 
   /** True for short availability answers that should not change conversation language. */
   static isShortYesNo(text: string): boolean {
-    const tokens = text.trim().toLowerCase().match(/\p{L}+/gu) ?? [];
+    const tokens = wordTokens(text.trim());
     if (tokens.length === 0 || tokens.length > 3) return false;
     return tokens.every((token) => FAST_PATH_YES_NO.has(token));
   }
@@ -269,7 +318,7 @@ export class LanguageManager {
     text: string,
     language: 'hi-IN' | 'kn-IN',
   ): boolean {
-    const tokens = new Set(text.match(/\p{L}+/gu) ?? []);
+    const tokens = new Set(wordTokens(text));
     const keywords = [
       ...STRONG_AFFIRMATIVE[language]!,
       ...STRONG_NEGATIVE[language]!,
@@ -297,7 +346,7 @@ export class LanguageManager {
   }
 
   private matchesKeywordSets(text: string, keywordMap: Record<string, Set<string>>): boolean {
-    const tokens = new Set(text.match(/\p{L}+/gu) ?? []);
+    const tokens = new Set(wordTokens(text));
     for (const keywords of Object.values(keywordMap)) {
       for (const keyword of keywords) {
         if (tokens.has(keyword)) return true;

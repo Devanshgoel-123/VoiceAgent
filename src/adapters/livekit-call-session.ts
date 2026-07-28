@@ -15,6 +15,7 @@ import { fireAndForget } from '../core/process-safety.js';
 import {
   LanguageManager,
   type LanguageCode,
+  UnsupportedLanguageDebouncer,
 } from '../core/language-manager.js';
 import { isOwnershipMismatch } from '../core/owner-intent.js';
 import type { OwnerOutcome } from '../jobs/call-log-types.js';
@@ -77,6 +78,7 @@ export class LiveKitCallSession implements CallLifecycle {
   private readonly callRecord?: CallSessionRecord;
   private readonly onPersist?: (snapshot: CallLogSnapshot) => Promise<void>;
   private readonly languageManager = new LanguageManager('en-IN');
+  private readonly unsupportedLanguageDebouncer = new UnsupportedLanguageDebouncer();
 
   private session?: voice.AgentSession;
   private hangupScheduled = false;
@@ -412,7 +414,22 @@ export class LiveKitCallSession implements CallLifecycle {
       const unsupportedLanguage = ev.isFinal
         ? LanguageManager.detectUnsupportedLanguage(ev.transcript, ev.language)
         : null;
-      if (unsupportedLanguage) {
+      const confirmedUnsupportedLanguage = ev.isFinal
+        ? this.unsupportedLanguageDebouncer.observe(unsupportedLanguage)
+        : null;
+      if (unsupportedLanguage && !confirmedUnsupportedLanguage) {
+        clearTurnCommitTimer();
+        callInfo(
+          `language: ignoring isolated unsupported hint=${unsupportedLanguage} heard="${truncateForLog(
+            ev.transcript,
+          )}"`,
+          this.logger,
+        );
+        this.armOwnerResponseTimeout();
+        return;
+      }
+      if (confirmedUnsupportedLanguage) {
+        this.unsupportedLanguageDebouncer.reset();
         clearTurnCommitTimer();
         this.clearOpeningGreeting();
         this.openingGreeted = true;
@@ -420,7 +437,7 @@ export class LiveKitCallSession implements CallLifecycle {
         this.ownerRespondedAfterOpening = false;
         this.setSpokenLanguage(
           'en-IN',
-          `unsupported_language=${unsupportedLanguage}`,
+          `unsupported_language=${confirmedUnsupportedLanguage}`,
         );
 
         const supportText =
