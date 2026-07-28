@@ -47,6 +47,22 @@ export interface VoiceCronSummary {
   items: VoiceCronItemResult[];
 }
 
+/** One line per property, logged as each item's outcome is decided. */
+function logCronItem(item: VoiceCronItemResult): void {
+  const payload = {
+    event: 'voice_cron_item',
+    propertyId: item.propertyId,
+    status: item.status,
+    ...(item.jobId ? { jobId: item.jobId } : {}),
+    ...(item.reason ? { reason: item.reason } : {}),
+  };
+  if (item.status === 'failed') {
+    console.error(JSON.stringify(payload));
+  } else {
+    console.log(JSON.stringify(payload));
+  }
+}
+
 export function propertyToJobInput(
   property: VoiceAdminProperty,
   settings: Settings,
@@ -171,13 +187,17 @@ export async function runVoiceCronTick(
     deps?.maxProperties,
   );
   const items: VoiceCronItemResult[] = [];
+  const record = (item: VoiceCronItemResult): void => {
+    items.push(item);
+    logCronItem(item);
+  };
   /** Same owner can list multiple properties — dispatch at most one call per phone per tick;
    *  the rest queue for a later tick instead of ringing the same person back-to-back. */
   const dispatchedPhones = new Set<string>();
 
   for (const property of properties) {
     if (!isCallableVoiceStatus(property.status)) {
-      items.push({
+      record({
         propertyId: property.id,
         phoneNumber: property.listerPhone ?? undefined,
         status: 'skipped',
@@ -187,7 +207,7 @@ export async function runVoiceCronTick(
     }
 
     if (wasContactedWithinCooldown(property, now)) {
-      items.push({
+      record({
         propertyId: property.id,
         phoneNumber: property.listerPhone ?? undefined,
         status: 'skipped',
@@ -198,7 +218,7 @@ export async function runVoiceCronTick(
 
     const input = propertyToJobInput(property, settings);
     if (!input) {
-      items.push({
+      record({
         propertyId: property.id,
         phoneNumber: property.listerPhone ?? undefined,
         status: 'skipped',
@@ -208,7 +228,7 @@ export async function runVoiceCronTick(
     }
 
     if (dispatchedPhones.has(input.owner.phoneNumber)) {
-      items.push({
+      record({
         propertyId: property.id,
         phoneNumber: input.owner.phoneNumber,
         status: 'skipped',
@@ -222,7 +242,7 @@ export async function runVoiceCronTick(
     try {
       const outcome = await dispatch(job, settings);
       if (!outcome.ok) {
-        items.push({
+        record({
           propertyId: property.id,
           phoneNumber: job.owner.phoneNumber,
           status: 'failed',
@@ -232,14 +252,14 @@ export async function runVoiceCronTick(
         continue;
       }
 
-      items.push({
+      record({
         propertyId: property.id,
         phoneNumber: job.owner.phoneNumber,
         status: 'dispatched',
         jobId: outcome.result.jobId,
       });
     } catch (error) {
-      items.push({
+      record({
         propertyId: property.id,
         phoneNumber: job.owner.phoneNumber,
         status: 'failed',

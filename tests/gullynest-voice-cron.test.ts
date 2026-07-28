@@ -443,6 +443,94 @@ describe('runVoiceCronTick', () => {
     );
   });
 
+  it('logs one line per property with propertyId, status, and reason (dispatched/skipped/failed)', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'ok-1', listerPhone: '+919555555555' }),
+      property({ id: 'skipped-1', listerPhone: null }),
+    ]);
+    const dispatch = vi.fn(async (job) => ({
+      ok: true as const,
+      result: {
+        jobId: job.jobId,
+        status: 'dispatched' as const,
+        roomName: 'room',
+        dispatchId: 'd1',
+        agentName: 'test-agent',
+        phoneNumber: job.owner.phoneNumber,
+      },
+    }));
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runVoiceCronTick(baseSettings(), {
+        client: { listAllProperties } as never,
+        dispatch,
+        now,
+      });
+
+      const dispatchedLine = JSON.parse(
+        logSpy.mock.calls.find(([line]) => String(line).includes('ok-1'))![0] as string,
+      );
+      expect(dispatchedLine).toMatchObject({
+        event: 'voice_cron_item',
+        propertyId: 'ok-1',
+        status: 'dispatched',
+      });
+      expect(dispatchedLine.jobId).toBeDefined();
+
+      const skippedLine = JSON.parse(
+        logSpy.mock.calls.find(([line]) => String(line).includes('skipped-1'))![0] as string,
+      );
+      expect(skippedLine).toMatchObject({
+        event: 'voice_cron_item',
+        propertyId: 'skipped-1',
+        status: 'skipped',
+        reason: 'missing_phone_or_address',
+      });
+
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('logs failed items to console.error with the reason', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [property({ id: 'fail-1' })]);
+    const dispatch = vi.fn(async () => ({
+      ok: false as const,
+      failure: {
+        kind: 'compliance' as const,
+        status: 403 as const,
+        error: 'quiet hours',
+        reason: 'outside_calling_hours',
+      },
+    }));
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await runVoiceCronTick(baseSettings(), {
+        client: { listAllProperties } as never,
+        dispatch,
+        now,
+      });
+
+      expect(errorSpy).toHaveBeenCalledOnce();
+      const line = JSON.parse(errorSpy.mock.calls[0]![0] as string);
+      expect(line).toMatchObject({
+        event: 'voice_cron_item',
+        propertyId: 'fail-1',
+        status: 'failed',
+      });
+      expect(line.reason).toContain('compliance');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it('records dispatch failures without throwing', async () => {
     const now = new Date('2026-07-27T12:00:00.000Z');
     const listAllProperties = vi.fn(async () => [property()]);
