@@ -22,7 +22,7 @@
     "trigger:call": "tsx src/scripts/trigger-call.ts",
     "cron:voice": "tsx src/scripts/run-voice-cron.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "tsx src/scripts/ensure-db-exists.ts && drizzle-kit migrate",
     "db:purge-expired": "tsx src/scripts/purge-expired-call-data.ts",
     "db:push": "drizzle-kit push",
     "test": "vitest run",
