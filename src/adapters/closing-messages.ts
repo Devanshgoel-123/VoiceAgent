@@ -106,3 +106,26 @@ export function goodbyeForLanguage(language: LanguageCode): string {
   if (language === 'kn-IN') return 'ಧನ್ಯವಾದಗಳು।';
   return DEFAULT_GOODBYE_TEXT;
 }
+
+/** Closing when the callee says they do not own the property. */
+export function ownershipMismatchClosing(language: LanguageCode): string {
+  if (language === 'hi-IN') {
+    return (
+      'माफ़ कीजिए, लगता है हमारे रिकॉर्ड में गलती है। ' +
+      'हम अपने रिकॉर्ड अपडेट कर देंगे और इस प्रॉपर्टी के बारे में आपको दोबारा परेशान नहीं करेंगे। ' +
+      'आपका दिन शुभ हो।'
+    );
+  }
+  if (language === 'kn-IN') {
+    return (
+      'ಕ್ಷಮಿಸಿ, ನಮ್ಮ ದಾಖಲೆಗಳಲ್ಲಿ ತಪ್ಪಿರುವಂತೆ ಕಾಣುತ್ತದೆ. ' +
+      'ನಾವು ನಮ್ಮ ದಾಖಲೆಗಳನ್ನು ನವೀಕರಿಸುತ್ತೇವೆ ಮತ್ತು ಈ ಪ್ರಾಪರ್ಟಿಯ ಬಗ್ಗೆ ನಿಮಗೆ ಮತ್ತೆ ತೊಂದರೆ ನೀಡುವುದಿಲ್ಲ. ' +
+      'ನಿಮ್ಮ ದಿನ ಶುಭವಾಗಿರಲಿ.'
+    );
+  }
+  return (
+    "We're sorry, it appears our records are incorrect. " +
+    "We'll update them and won't contact you again about this property. " +
+    'Have a good day.'
+  );
+}

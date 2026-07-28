@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   availabilityClosing,
   HANGUP_DEFER_MS,
+  ownershipMismatchClosing,
 } from '../src/adapters/livekit-call-session.js';
 
 describe('availability closing messages', () => {
@@ -62,6 +63,15 @@ describe('availability closing messages', () => {
     expect(text).toContain('Acme Homes team');
     expect(text).toContain('Acme Homes Property Team');
     expect(text).not.toContain('Galynest');
+  });
+
+  it('apologizes and promises no further contact about an ownership mismatch', () => {
+    expect(ownershipMismatchClosing('en-IN')).toContain(
+      "won't contact you again about this property",
+    );
+    expect(ownershipMismatchClosing('hi-IN')).toContain('रिकॉर्ड में गलती');
+    expect(ownershipMismatchClosing('hi-IN')).toContain('दोबारा परेशान नहीं करेंगे');
+    expect(ownershipMismatchClosing('kn-IN')).toContain('ತಪ್ಪಿರುವಂತೆ');
   });
 });
 

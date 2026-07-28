@@ -1,5 +1,6 @@
 import type { CallMetadata } from '../core/types.js';
 import type {
+  CallEndReason,
   CallDirection,
   CallLogSnapshot,
   OwnerOutcome,
@@ -28,6 +29,7 @@ export class CallSessionRecord {
   private roomName?: string;
   private dispatchId?: string;
   private doNotCallReason?: string;
+  private endReason?: CallEndReason;
 
   constructor(metadata: CallMetadata) {
     this.jobId = String(metadata.job_id ?? 'unknown');
@@ -68,6 +70,10 @@ export class CallSessionRecord {
 
   recordDoNotCall(reason: string): void {
     this.doNotCallReason = reason;
+  }
+
+  recordEndReason(reason: CallEndReason): void {
+    this.endReason = reason;
   }
 
   finalize(report?: SessionReportLike | null): CallLogSnapshot {
@@ -112,6 +118,7 @@ export class CallSessionRecord {
         ...(this.doNotCallReason
           ? { do_not_call: true, do_not_call_reason: this.doNotCallReason }
           : {}),
+        ...(this.endReason ? { call_end_reason: this.endReason } : {}),
       },
       startedAt: this.startedAt,
       completedAt: new Date().toISOString(),

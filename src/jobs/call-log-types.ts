@@ -4,6 +4,7 @@ export type CallDirection = 'outbound' | 'inbound';
 
 /** Owner availability answer, or "other" when unclear / not captured. */
 export type OwnerOutcome = YesNoAnswer | 'other';
+export type CallEndReason = 'ownership_mismatch';
 
 export interface TranscriptEntry {
   role: 'user' | 'assistant' | 'system' | 'tool';

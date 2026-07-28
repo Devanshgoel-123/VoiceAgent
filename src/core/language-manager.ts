@@ -31,8 +31,32 @@ const WEAK_NEGATIVE: Record<string, Set<string>> = {
   'kn-IN': new Set(),
 };
 
+/** Unambiguous standalone availability answers safe enough to bypass the LLM. */
+const FAST_PATH_YES_NO = new Set([
+  'yes',
+  'no',
+  'haan',
+  'han',
+  'haa',
+  'हाँ',
+  'हां',
+  'nahi',
+  'nahin',
+  'nhi',
+  'नहीं',
+  'haudu',
+  'houdu',
+  'howdu',
+  'ಹೌದು',
+  'illa',
+  'ಇಲ್ಲ',
+  'available',
+  'unavailable',
+]);
+
 const DEVANAGARI_RE = /[\u0900-\u097F]/g;
 const KANNADA_RE = /[\u0C80-\u0CFF]/g;
+const GUJARATI_RE = /[\u0A80-\u0AFF]/;
 const LATIN_RE = /[a-zA-Z]/g;
 
 const TTS_SPEAKERS: Record<string, string> = {
@@ -140,23 +164,32 @@ export class LanguageManager {
     return null;
   }
 
+  /**
+   * Detect languages recognized by STT but unsupported by this call pipeline.
+   * Keep this separate from LanguageCode so unsupported languages are never
+   * accidentally passed into TTS updateOptions.
+   */
+  static detectUnsupportedLanguage(
+    text: string,
+    sttRaw?: string | null,
+  ): string | null {
+    const stt = sttRaw?.trim().toLowerCase();
+    if (GUJARATI_RE.test(text)) return 'gu-IN';
+    if (
+      stt &&
+      /^[a-z]{2}(?:-|$)/.test(stt) &&
+      !LanguageManager.normalizeLanguageCode(stt)
+    ) {
+      return stt;
+    }
+    return null;
+  }
+
   /** True for short availability answers that should not change conversation language. */
   static isShortYesNo(text: string): boolean {
     const tokens = text.trim().toLowerCase().match(/\p{L}+/gu) ?? [];
     if (tokens.length === 0 || tokens.length > 3) return false;
-
-    const yesNo = new Set<string>([
-      ...STRONG_AFFIRMATIVE['en-IN']!,
-      ...STRONG_AFFIRMATIVE['hi-IN']!,
-      ...STRONG_AFFIRMATIVE['kn-IN']!,
-      ...STRONG_NEGATIVE['en-IN']!,
-      ...STRONG_NEGATIVE['hi-IN']!,
-      ...STRONG_NEGATIVE['kn-IN']!,
-      'available',
-      'unavailable',
-    ]);
-
-    return tokens.every((token) => yesNo.has(token));
+    return tokens.every((token) => FAST_PATH_YES_NO.has(token));
   }
 
   detectFromText(text: string): LanguageDetectionResult {
