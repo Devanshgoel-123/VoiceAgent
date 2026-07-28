@@ -58,7 +58,7 @@ envVarGroups:
       - key: SARVAM_API_KEY
         sync: false
       - key: TTS_PROVIDER
-        value: sarvam
+        value: elevenlabs
       - key: ELEVEN_API_KEY
         sync: false
       - key: ELEVENLABS_VOICE_ID
