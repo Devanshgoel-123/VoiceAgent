@@ -32,15 +32,19 @@ function buildQuery(params: ListVoicePropertiesQuery): string {
   return qs ? `?${qs}` : '';
 }
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
 export class GullyNestClient {
   private readonly baseUrl: string;
   private readonly apiSecret: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly requestTimeoutMs: number;
 
   constructor(config: GullyNestClientConfig) {
     this.baseUrl = normalizeBaseUrl(config.baseUrl);
     this.apiSecret = config.apiSecret;
     this.fetchImpl = config.fetchImpl ?? fetch;
+    this.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   async listProperties(
@@ -57,7 +61,7 @@ export class GullyNestClient {
     query: Omit<ListVoicePropertiesQuery, 'page'> = {},
     maxItems = Number.POSITIVE_INFINITY,
   ): Promise<VoiceAdminPropertiesResponse['items']> {
-    const pageSize = query.pageSize ?? 50;
+    const pageSize = Math.min(query.pageSize ?? 50, maxItems);
     const items: VoiceAdminPropertiesResponse['items'] = [];
     let page = 1;
     let totalPages = 1;
@@ -97,6 +101,7 @@ export class GullyNestClient {
         'X-Voice-Admin-Secret': this.apiSecret,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(this.requestTimeoutMs),
     });
 
     const text = await response.text();
