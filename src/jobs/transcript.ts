@@ -38,7 +38,7 @@ export class CallTranscriptBuilder {
 
   addAssistantText(text: string, source = 'agent'): void {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed || isInternalToolMarkup(trimmed)) return;
 
     this.pushIfNew({
       role: 'assistant',
@@ -100,7 +100,7 @@ function chatItemToTranscriptEntry(item: unknown): TranscriptEntry | null {
   if (type === 'message') {
     const role = String(record.role ?? 'assistant');
     const text = extractMessageText(record);
-    if (!text) return null;
+    if (!text || (role === 'assistant' && isInternalToolMarkup(text))) return null;
     return {
       role: role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant',
       text,
@@ -123,6 +123,10 @@ function chatItemToTranscriptEntry(item: unknown): TranscriptEntry | null {
   }
 
   return null;
+}
+
+function isInternalToolMarkup(text: string): boolean {
+  return /<tool_call>|<arg_key>|<arg_value>/i.test(text);
 }
 
 function extractMessageText(record: Record<string, unknown>): string {

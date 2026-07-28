@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { LanguageManager } from '../src/core/language-manager.js';
+import {
+  LanguageManager,
+  UnsupportedLanguageDebouncer,
+} from '../src/core/language-manager.js';
 import { createPropertyAvailabilityJob, toDispatchMetadata } from '../src/jobs/models.js';
 import { applySpokenLanguage } from '../src/adapters/spoken-language.js';
 
@@ -122,6 +125,26 @@ describe('LanguageManager', () => {
     expect(LanguageManager.isShortYesNo('ha ji')).toBe(false);
     expect(LanguageManager.isShortYesNo('haan')).toBe(true);
     expect(LanguageManager.isShortYesNo('no')).toBe(true);
+  });
+
+  it('fast-paths punctuated Indic yes/no without splitting combining marks', () => {
+    expect(LanguageManager.isShortYesNo('नहीं।')).toBe(true);
+    expect(LanguageManager.isShortYesNo('हाँ।')).toBe(true);
+    expect(LanguageManager.isShortYesNo('ਨਹੀਂ।')).toBe(true);
+    expect(
+      new LanguageManager('hi-IN').detectFromText('ਨਹੀਂ।').isNegative,
+    ).toBe(true);
+    expect(
+      LanguageManager.detectUnsupportedLanguage('ਨਹੀਂ।', 'pa-IN'),
+    ).toBeNull();
+  });
+
+  it('requires two consecutive unsupported-language turns', () => {
+    const debouncer = new UnsupportedLanguageDebouncer();
+    expect(debouncer.observe('mr-in')).toBeNull();
+    expect(debouncer.observe(null)).toBeNull();
+    expect(debouncer.observe('mr-in')).toBeNull();
+    expect(debouncer.observe('mr-in')).toBe('mr-in');
   });
 
   it('does not flap to Kannada from STT alone on English speech', () => {

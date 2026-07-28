@@ -12,6 +12,17 @@ describe('CallTranscriptBuilder', () => {
     expect(builder.getLanguages()).toContain('hi-IN');
     expect(builder.getEntries()).toHaveLength(2);
   });
+
+  it('does not record internal tool-call markup as assistant speech', () => {
+    const builder = new CallTranscriptBuilder();
+    builder.addAssistantText(
+      '<tool_call>recordPropertyAvailability <arg_key>isAvailable</arg_key></tool_call>',
+    );
+    builder.addAssistantText('धन्यवाद।', 'closing');
+
+    expect(builder.getEntries()).toHaveLength(1);
+    expect(builder.getEntries()[0]?.text).toBe('धन्यवाद।');
+  });
 });
 
 describe('CallSessionRecord', () => {
