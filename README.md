@@ -348,6 +348,8 @@ psql "$DATABASE_URL" -c "SELECT id, hash, created_at FROM drizzle.__drizzle_migr
 
 For new schema changes: edit `src/db/schema.ts` → `npm run db:generate` → commit `drizzle/` → `npm run db:migrate`. Avoid `db:push` in production.
 
+Re-running `db:migrate` on an up-to-date database may print harmless Postgres `NOTICE` lines (`schema already exists`, etc.) — that is expected.
+
 Each call is tracked in `call_logs` with:
 
 | Field | Meaning |
@@ -440,7 +442,7 @@ Each call is tracked in `call_logs` with:
 | `npm run cron:voice` | Interval cron: fetch GullyNest properties and dispatch calls |
 | `npm run db:push` | Push Drizzle schema to Postgres |
 | `npm run db:generate` | Generate SQL migrations from schema (updates `drizzle/meta/_journal.json`) |
-| `npm run db:migrate` | Apply SQL migrations via Drizzle migrator |
+| `npm run db:migrate` | Apply SQL migrations (`drizzle-kit migrate`) |
 | `npm test` | Unit tests |
 | `npm run typecheck` | TypeScript check |
 
