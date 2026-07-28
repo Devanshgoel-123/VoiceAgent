@@ -97,6 +97,12 @@ describe('LanguageManager', () => {
     expect(
       LanguageManager.detectUnsupportedLanguage('શું ખબર?', null),
     ).toBe('gu-IN');
+    expect(
+      LanguageManager.detectUnsupportedLanguage('बॉक्स की लिंक वगैरे.', 'mr-IN'),
+    ).toBe('mr-in');
+    expect(
+      LanguageManager.detectUnsupportedLanguage('ആ അതെ അതെ.', 'ml-IN'),
+    ).toBe('ml-in');
   });
 
   it.each([

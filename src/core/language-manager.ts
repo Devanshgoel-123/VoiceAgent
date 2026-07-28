@@ -172,9 +172,16 @@ export class LanguageManager {
   static detectUnsupportedLanguage(
     text: string,
     sttRaw?: string | null,
-  ): 'gu-IN' | null {
+  ): string | null {
     const stt = sttRaw?.trim().toLowerCase();
-    if (stt?.startsWith('gu') || GUJARATI_RE.test(text)) return 'gu-IN';
+    if (GUJARATI_RE.test(text)) return 'gu-IN';
+    if (
+      stt &&
+      /^[a-z]{2}(?:-|$)/.test(stt) &&
+      !LanguageManager.normalizeLanguageCode(stt)
+    ) {
+      return stt;
+    }
     return null;
   }
 
