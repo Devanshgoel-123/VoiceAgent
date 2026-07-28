@@ -115,7 +115,7 @@ export class LiveKitCallSession implements CallLifecycle {
         endpointing: {
           minDelay: this.isOutboundCall ? OUTBOUND_ENDPOINTING_MIN_MS : 70,
         },
-        preemptiveGeneration: { enabled: true },
+        preemptiveGeneration: { enabled: false },
         interruption: {
           enabled: !this.isOutboundCall,
           discardAudioIfUninterruptible: this.isOutboundCall,
@@ -322,12 +322,16 @@ export class LiveKitCallSession implements CallLifecycle {
   }
 
   private clearOpeningGreeting(): void {
+    this.clearOpeningTimer();
+    this.clearOwnerResponseTimeout();
+  }
+
+  private clearOpeningTimer(): void {
     if (this.openingTimer) {
       clearTimeout(this.openingTimer);
       this.openingTimer = undefined;
     }
     this.openingArmed = false;
-    this.clearOwnerResponseTimeout();
   }
 
   private attachSessionEvents(session: voice.AgentSession): void {
@@ -346,7 +350,8 @@ export class LiveKitCallSession implements CallLifecycle {
       callInfo(`agent: ${ev.oldState} → ${ev.newState}`, this.logger);
       if (ev.newState === 'thinking' || ev.newState === 'speaking') {
         clearTurnCommitTimer();
-        this.clearOpeningGreeting();
+        // Agent activity must not cancel the timer waiting for the owner.
+        this.clearOpeningTimer();
       }
     });
 
@@ -358,6 +363,10 @@ export class LiveKitCallSession implements CallLifecycle {
       const who =
         item.role === 'user' ? 'owner' : item.role === 'assistant' ? 'agent' : item.role;
       callDebug(`${who}: ${text}`, this.logger);
+      if (item.role === 'assistant') {
+        this.callRecord?.transcriptBuilder.addAssistantText(text, 'agent');
+        this.sessionErrorCount = 0;
+      }
     });
 
     session.on(voice.AgentSessionEventTypes.Error, (ev) => {
@@ -366,12 +375,21 @@ export class LiveKitCallSession implements CallLifecycle {
       if (this.hangupScheduled || this.hangupStarted) return;
 
       const message = String(ev.error);
-      this.callRecord?.markFailed(`Session provider error: ${message}`);
+      if (this.sessionErrorCount < 2) {
+        callWarn('session error: allowing one transient recovery attempt', this.logger);
+        this.armOwnerResponseTimeout();
+        return;
+      }
+
+      this.callRecord?.markFailed(`Repeated session provider error: ${message}`);
       this.scheduleHangup();
     });
 
     session.on(voice.AgentSessionEventTypes.UserInputTranscribed, (ev) => {
-      if (ev.transcript.trim()) {
+      const transcript = ev.transcript.trim();
+      if (!transcript) return;
+
+      if (!this.hangupScheduled && !this.hangupStarted) {
         this.callRecord?.transcriptBuilder.addUserTranscript(ev.transcript, {
           isFinal: ev.isFinal,
           language: ev.language,
@@ -379,7 +397,30 @@ export class LiveKitCallSession implements CallLifecycle {
         });
       }
 
-      if (!this.isOutboundCall || !ev.transcript.trim()) return;
+      if (!this.isOutboundCall || this.hangupScheduled || this.hangupStarted) return;
+
+      if (
+        ev.isFinal &&
+        LanguageManager.detectUnsupportedLanguage(ev.transcript, ev.language)
+      ) {
+        clearTurnCommitTimer();
+        this.clearOpeningGreeting();
+        this.openingGreeted = true;
+        // We handled this turn and are now waiting for a supported-language reply.
+        this.ownerRespondedAfterOpening = false;
+        this.setSpokenLanguage('en-IN', 'unsupported_gujarati');
+
+        const supportText =
+          'Sorry, I can currently speak English, Hindi, or Kannada. ' +
+          'Please tell me which language you prefer.';
+        this.callRecord?.transcriptBuilder.addAssistantText(
+          supportText,
+          'language_fallback',
+        );
+        session.say(supportText, { allowInterruptions: false });
+        this.armOwnerResponseTimeout();
+        return;
+      }
 
       const resolved = this.languageManager.resolveSpokenLanguage(
         ev.transcript,
@@ -414,23 +455,22 @@ export class LiveKitCallSession implements CallLifecycle {
         this.clearOwnerResponseTimeout();
       }
 
-      // Opening window: owner spoke first → scripted intro in their language (no LLM).
+      let ownerSpokeBeforeOpening = false;
+
+      // If the owner speaks first, cancel the canned opening and send that turn
+      // to the LLM. This prevents identity/language questions being discarded.
       if ((this.openingArmed || this.pendingOwnerLanguageGreeting) && !this.openingGreeted) {
         if (this.openingArmed) {
           this.clearOpeningGreeting();
-          this.pendingOwnerLanguageGreeting = true;
         }
         this.pendingOwnerLanguageGreeting = false;
-        const openLang =
-          this.languageManager.getCurrentLanguage() === 'unknown'
-            ? this.preferredOpeningLanguage
-            : this.languageManager.getCurrentLanguage();
-        this.speakOpening(openLang);
-        return;
+        this.openingGreeted = true;
+        this.ownerRespondedAfterOpening = true;
+        ownerSpokeBeforeOpening = true;
       }
 
       // Clear yes/no → skip LLM entirely.
-      if (this.tryFastAvailabilityAnswer(ev.transcript)) {
+      if (!ownerSpokeBeforeOpening && this.tryFastAvailabilityAnswer(ev.transcript)) {
         return;
       }
 

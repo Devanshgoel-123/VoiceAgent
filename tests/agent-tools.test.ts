@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CallLifecycle } from '../src/adapters/livekit-call-session.js';
-import { buildPropertyTools } from '../src/agents/property-availability/agent.js';
+import {
+  buildPropertyTools,
+  isClearAvailabilityResponse,
+} from '../src/agents/property-availability/agent.js';
 import type { CallMetadata } from '../src/core/types.js';
 
 describe('recordPropertyAvailability tool behavior', () => {
@@ -76,5 +79,46 @@ describe('recordPropertyAvailability tool behavior', () => {
     );
     expect(lifecycle.scheduleHangup).toHaveBeenCalledWith('no');
     expect(state.doNotCallRecorded).toBe(true);
+  });
+
+  it.each([
+    'Who is this speaking?',
+    'What is Galynest?',
+    'क्या आप हिंदी में बात कर सकते हो?',
+    'आप कौन बोल रहे हो?',
+    'તમે કોણ બોલો છો મારા નામ?',
+    'I don’t know about this property, please hang up.',
+  ])('does not treat "%s" as a clear availability answer', (text) => {
+    expect(isClearAvailabilityResponse(text)).toBe(false);
+  });
+
+  it('rejects an ambiguous availability tool call without hanging up', async () => {
+    const lifecycle: CallLifecycle = {
+      scheduleHangup: vi.fn(),
+      setSpokenLanguage: vi.fn(),
+      getCurrentLanguage: vi.fn(() => 'en-IN'),
+      recordOwnerOutcome: vi.fn(),
+      recordDoNotCall: vi.fn(),
+    };
+    const state = {
+      jobId: 'job-tool-test',
+      companyName: 'Galynest',
+      companyWebsite: 'galynest.com',
+      callMetadata: {} as CallMetadata,
+      propertyAvailable: 'not_asked' as const,
+      outcomeRecorded: false,
+      doNotCallRecorded: false,
+    };
+
+    const tools = buildPropertyTools(state, lifecycle);
+    const result = await tools.recordPropertyAvailability.execute({
+      isAvailable: false,
+      ownerResponse: 'I do not know about this property, please hang up.',
+    });
+
+    expect(result).toContain('Not recorded');
+    expect(lifecycle.recordOwnerOutcome).not.toHaveBeenCalled();
+    expect(lifecycle.scheduleHangup).not.toHaveBeenCalled();
+    expect(state.propertyAvailable).toBe('not_asked');
   });
 });
