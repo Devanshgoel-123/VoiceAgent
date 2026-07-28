@@ -1,4 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+// persistCallResult (below) calls the real safeCompleteCallLog/purgeExpiredCallData —
+// mock the DB layer so these tests never touch a real database (this repo's .env loads
+// a real DATABASE_URL via dotenv/config, imported transitively through settings.ts).
+vi.mock('../src/db/call-log-repository.js', () => ({
+  safeCompleteCallLog: vi.fn(async () => {}),
+}));
+vi.mock('../src/jobs/retention.js', () => ({
+  purgeExpiredCallData: vi.fn(async () => 0),
+}));
+
 import { VOICE_CRON_PROPERTY_STATUSES } from '../src/config/call-config.js';
 import {
   GullyNestApiError,
@@ -8,6 +19,7 @@ import {
   mapSnapshotToCallOutcomeAction,
   shouldReportCallOutcome,
 } from '../src/integrations/gullynest/outcome-map.js';
+import { persistCallResult } from '../src/jobs/call-outcome-persistence.js';
 import type { CallLogSnapshot } from '../src/jobs/call-log-types.js';
 import type { Settings } from '../src/config/settings.js';
 import {
@@ -19,6 +31,7 @@ import {
   voiceContactedBeforeCutoff,
   wasContactedWithinCooldown,
 } from '../src/jobs/voice-cron.js';
+import { parseMaxProperties } from '../src/scripts/run-voice-cron.js';
 import type { VoiceAdminProperty } from '../src/integrations/gullynest/types.js';
 
 function snapshot(
@@ -158,6 +171,44 @@ describe('GullyNestClient', () => {
 
     await expect(client.listProperties()).rejects.toBeInstanceOf(GullyNestApiError);
   });
+
+  it('passes an AbortSignal to fetchImpl on every request', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({ items: [], page: 1, pageSize: 50, total: 0, totalPages: 0 }),
+        { status: 200 },
+      ),
+    );
+    const client = new GullyNestClient({
+      baseUrl: 'https://example.com',
+      apiSecret: 'secret',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    await client.listProperties();
+
+    const [, init] = fetchImpl.mock.calls[0]!;
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('rejects a request that never resolves once requestTimeoutMs elapses', async () => {
+    const fetchImpl = vi.fn(
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('The operation was aborted.', 'AbortError')),
+          );
+        }),
+    );
+    const client = new GullyNestClient({
+      baseUrl: 'https://example.com',
+      apiSecret: 'secret',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      requestTimeoutMs: 30,
+    });
+
+    await expect(client.listProperties()).rejects.toThrow(/aborted/i);
+  }, 2000);
 });
 
 function baseSettings(overrides: Partial<Settings> = {}): Settings {
@@ -254,39 +305,32 @@ describe('voice cron property status filters', () => {
     expect(isCallableVoiceStatus('STALE')).toBe(false);
   });
 
-  it('always passes an explicit status to GullyNest (never relies on LIVE default)', async () => {
+  it('fetches LIVE + SOFT_STALE in a single comma-joined status request', async () => {
     const listAllProperties = vi.fn(async () => []);
 
     await fetchCallableVoiceProperties({ listAllProperties } as never, now);
 
-    expect(listAllProperties).toHaveBeenCalledTimes(VOICE_CRON_PROPERTY_STATUSES.length);
-    for (const call of listAllProperties.mock.calls) {
-      const query = call[0] as { status?: string; contactedBefore?: string };
-      expect(query.status).toBeDefined();
-      expect(['LIVE', 'SOFT_STALE']).toContain(query.status);
-      expect(query.contactedBefore).toBe('2026-07-20T12:00:00.000Z');
-    }
-    expect(
-      listAllProperties.mock.calls.map((call) => (call[0] as { status: string }).status),
-    ).toEqual(['LIVE', 'SOFT_STALE']);
+    expect(listAllProperties).toHaveBeenCalledOnce();
+    const [query] = listAllProperties.mock.calls[0]!;
+    expect((query as { status?: string }).status).toBe('LIVE,SOFT_STALE');
+    expect((query as { contactedBefore?: string }).contactedBefore).toBe(
+      '2026-07-20T12:00:00.000Z',
+    );
   });
 
   it('drops STALE rows even if the API returns them', async () => {
-    const listAllProperties = vi.fn(async (query) => {
-      if (query.status === 'LIVE') {
-        return [property({ id: 'live-1' })];
-      }
-      return [
-        property({ id: 'soft-1', status: 'SOFT_STALE' }),
-        property({ id: 'stale-1', status: 'STALE' }),
-      ];
-    });
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'live-1' }),
+      property({ id: 'soft-1', status: 'SOFT_STALE' }),
+      property({ id: 'stale-1', status: 'STALE' }),
+    ]);
 
     const properties = await fetchCallableVoiceProperties(
       { listAllProperties } as never,
       now,
     );
 
+    expect(listAllProperties).toHaveBeenCalledOnce();
     expect(properties.map((p) => p.id).sort()).toEqual(['live-1', 'soft-1']);
     expect(properties.some((p) => p.status === 'STALE')).toBe(false);
   });
@@ -317,35 +361,25 @@ describe('voice recontact filters', () => {
     );
   });
 
-  it('fetches LIVE and SOFT_STALE with contactedBefore', async () => {
-    const listAllProperties = vi.fn(async (query) => {
-      if (query.status === 'LIVE') {
-        return [
-          property({ id: 'live-1' }),
-          property({
-            id: 'live-recent',
-            voiceLastContactedAt: '2026-07-25T00:00:00.000Z',
-          }),
-        ];
-      }
-      return [
-        property({ id: 'soft-1', status: 'SOFT_STALE' }),
-        property({ id: 'stale-1', status: 'STALE' }),
-      ];
-    });
+  it('fetches LIVE and SOFT_STALE with contactedBefore, filtering recently-contacted rows', async () => {
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'live-1' }),
+      property({
+        id: 'live-recent',
+        voiceLastContactedAt: '2026-07-25T00:00:00.000Z',
+      }),
+      property({ id: 'soft-1', status: 'SOFT_STALE' }),
+      property({ id: 'stale-1', status: 'STALE' }),
+    ]);
 
     const properties = await fetchCallableVoiceProperties(
       { listAllProperties } as never,
       now,
     );
 
-    expect(listAllProperties).toHaveBeenCalledTimes(2);
+    expect(listAllProperties).toHaveBeenCalledOnce();
     expect(listAllProperties).toHaveBeenCalledWith({
-      status: 'LIVE',
-      contactedBefore: '2026-07-20T12:00:00.000Z',
-    });
-    expect(listAllProperties).toHaveBeenCalledWith({
-      status: 'SOFT_STALE',
+      status: 'LIVE,SOFT_STALE',
       contactedBefore: '2026-07-20T12:00:00.000Z',
     });
     expect(properties.map((p) => p.id).sort()).toEqual(['live-1', 'soft-1']);
@@ -355,19 +389,16 @@ describe('voice recontact filters', () => {
 describe('runVoiceCronTick', () => {
   it('dispatches each callable property from the API response', async () => {
     const now = new Date('2026-07-27T12:00:00.000Z');
-    const listAllProperties = vi.fn(async (query) => {
-      if (query.status === 'SOFT_STALE') return [];
-      return [
-        property({ id: 'a', listerPhone: null }),
-        property({ id: 'b', shortId: '1' }),
-        property({
-          id: 'c',
-          shortId: '2',
-          listerPhone: '+919111111111',
-          listerName: 'Sita',
-        }),
-      ];
-    });
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'a', listerPhone: null }),
+      property({ id: 'b', shortId: '1' }),
+      property({
+        id: 'c',
+        shortId: '2',
+        listerPhone: '+919111111111',
+        listerName: 'Sita',
+      }),
+    ]);
 
     const dispatch = vi.fn(async (job) => ({
       ok: true as const,
@@ -387,12 +418,9 @@ describe('runVoiceCronTick', () => {
       now,
     });
 
+    expect(listAllProperties).toHaveBeenCalledOnce();
     expect(listAllProperties).toHaveBeenCalledWith({
-      status: 'LIVE',
-      contactedBefore: '2026-07-20T12:00:00.000Z',
-    });
-    expect(listAllProperties).toHaveBeenCalledWith({
-      status: 'SOFT_STALE',
+      status: 'LIVE,SOFT_STALE',
       contactedBefore: '2026-07-20T12:00:00.000Z',
     });
     expect(summary.skipped).toBe(1);
@@ -406,9 +434,7 @@ describe('runVoiceCronTick', () => {
 
   it('records dispatch failures without throwing', async () => {
     const now = new Date('2026-07-27T12:00:00.000Z');
-    const listAllProperties = vi.fn(async (query) =>
-      query.status === 'LIVE' ? [property()] : [],
-    );
+    const listAllProperties = vi.fn(async () => [property()]);
     const dispatch = vi.fn(async () => ({
       ok: false as const,
       failure: {
@@ -432,17 +458,14 @@ describe('runVoiceCronTick', () => {
 
   it('dispatches SOFT_STALE properties returned by the cron fetch', async () => {
     const now = new Date('2026-07-27T12:00:00.000Z');
-    const listAllProperties = vi.fn(async (query) => {
-      if (query.status === 'LIVE') return [];
-      return [
-        property({
-          id: 'soft-1',
-          status: 'SOFT_STALE',
-          listerPhone: '+919222222222',
-          listerName: 'Anita',
-        }),
-      ];
-    });
+    const listAllProperties = vi.fn(async () => [
+      property({
+        id: 'soft-1',
+        status: 'SOFT_STALE',
+        listerPhone: '+919222222222',
+        listerName: 'Anita',
+      }),
+    ]);
 
     const dispatch = vi.fn(async (job) => ({
       ok: true as const,
@@ -469,5 +492,196 @@ describe('runVoiceCronTick', () => {
       phoneNumber: '+919222222222',
     });
     expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('queues later properties for the same listerPhone instead of dispatching them concurrently', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'flat-1', shortId: '1', listerPhone: '+919333333333' }),
+      property({ id: 'flat-2', shortId: '2', listerPhone: '+919333333333' }),
+      property({ id: 'flat-3', shortId: '3', listerPhone: '+919444444444' }),
+    ]);
+
+    const dispatch = vi.fn(async (job) => ({
+      ok: true as const,
+      result: {
+        jobId: job.jobId,
+        status: 'dispatched' as const,
+        roomName: 'room',
+        dispatchId: 'd1',
+        agentName: 'test-agent',
+        phoneNumber: job.owner.phoneNumber,
+      },
+    }));
+
+    const summary = await runVoiceCronTick(baseSettings(), {
+      client: { listAllProperties } as never,
+      dispatch,
+      now,
+    });
+
+    // Only one call per phone number this tick — flat-1 goes out, flat-2 (same
+    // owner) queues for a later tick, flat-3 (different owner) goes out too.
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(summary.dispatched).toBe(2);
+    expect(summary.skipped).toBe(1);
+    expect(summary.items).toContainEqual(
+      expect.objectContaining({
+        propertyId: 'flat-1',
+        status: 'dispatched',
+        phoneNumber: '+919333333333',
+      }),
+    );
+    expect(summary.items).toContainEqual(
+      expect.objectContaining({
+        propertyId: 'flat-2',
+        status: 'skipped',
+        reason: 'queued_same_phone_this_tick',
+        phoneNumber: '+919333333333',
+      }),
+    );
+    expect(summary.items).toContainEqual(
+      expect.objectContaining({
+        propertyId: 'flat-3',
+        status: 'dispatched',
+        phoneNumber: '+919444444444',
+      }),
+    );
+  });
+});
+
+describe('parseMaxProperties (--max-properties CLI flag)', () => {
+  it('returns undefined when not passed', () => {
+    expect(parseMaxProperties(['--once'])).toBeUndefined();
+  });
+
+  it('parses --max-properties=<n>', () => {
+    expect(parseMaxProperties(['--once', '--max-properties=50'])).toBe(50);
+  });
+
+  it('parses --max-properties <n> as two args', () => {
+    expect(parseMaxProperties(['--max-properties', '25', '--once'])).toBe(25);
+  });
+
+  it('throws on a non-positive-integer value', () => {
+    expect(() => parseMaxProperties(['--max-properties=0'])).toThrow();
+    expect(() => parseMaxProperties(['--max-properties=abc'])).toThrow();
+    expect(() => parseMaxProperties(['--max-properties=-5'])).toThrow();
+  });
+});
+
+describe('fetchCallableVoiceProperties maxProperties cap', () => {
+  const now = new Date('2026-07-27T12:00:00.000Z');
+
+  it('fetches everything when no cap is given', async () => {
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'live-1' }),
+      property({ id: 'live-2', shortId: '2' }),
+      property({ id: 'soft-1', status: 'SOFT_STALE', shortId: '3' }),
+    ]);
+
+    const properties = await fetchCallableVoiceProperties(
+      { listAllProperties } as never,
+      now,
+    );
+
+    expect(properties).toHaveLength(3);
+    expect(listAllProperties).toHaveBeenCalledOnce();
+    expect(listAllProperties.mock.calls[0]).toHaveLength(1);
+  });
+
+  it('caps the result and forwards the cap to the single fetch call', async () => {
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'live-1' }),
+      property({ id: 'live-2', shortId: '2' }),
+      property({ id: 'soft-1', status: 'SOFT_STALE', shortId: '3' }),
+    ]);
+
+    const properties = await fetchCallableVoiceProperties(
+      { listAllProperties } as never,
+      now,
+      2,
+    );
+
+    expect(properties).toHaveLength(2);
+    expect(listAllProperties).toHaveBeenCalledOnce();
+    expect(listAllProperties.mock.calls[0]![1]).toBe(2);
+  });
+});
+
+describe('persistCallResult (GullyNest outcome reporting)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function gullyNestSettings(): Settings {
+    return baseSettings({
+      voiceAgentApiBaseUrl: 'https://example.com',
+      voiceAgentApiSecret: 'secret-123',
+    });
+  }
+
+  function stubOutcomeFetch() {
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          action: 'soft_stale',
+          property: {
+            id: 'cmqproperty1',
+            status: 'SOFT_STALE',
+            voiceLastContactedAt: '2026-07-27T12:00:00.000Z',
+            updatedAt: '2026-07-27T12:00:00.000Z',
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchImpl);
+    return fetchImpl;
+  }
+
+  it('reports soft_stale for a no_answer snapshot (the previously-missing case)', async () => {
+    const fetchImpl = stubOutcomeFetch();
+
+    await persistCallResult(
+      snapshot({ status: 'no_answer', ownerOutcome: 'other', answered: false }),
+      gullyNestSettings(),
+    );
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(String(url)).toBe(
+      'https://example.com/api/voice-admin/properties/cmqproperty1/call-outcome',
+    );
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      action: 'soft_stale',
+    });
+  });
+
+  it('reports soft_stale for a failed (dial error) snapshot', async () => {
+    const fetchImpl = stubOutcomeFetch();
+
+    await persistCallResult(
+      snapshot({ status: 'failed', ownerOutcome: 'other', answered: false }),
+      gullyNestSettings(),
+    );
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string)).toEqual({
+      action: 'soft_stale',
+    });
+  });
+
+  it('never reports an outcome for a console-test snapshot', async () => {
+    const fetchImpl = vi.fn();
+    vi.stubGlobal('fetch', fetchImpl);
+
+    await persistCallResult(
+      snapshot({ jobId: 'console-test-job', propertyId: 'PROP-CONSOLE-001' }),
+      gullyNestSettings(),
+    );
+
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

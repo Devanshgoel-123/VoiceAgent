@@ -31,7 +31,7 @@ Returns a paginated, filterable list of properties for the cron to call. Default
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `status` | `LIVE`, `SOFT_STALE`, `STALE`, or `ALL` | `LIVE` | Unrecognized values fall back to `LIVE`. |
+| `status` | comma list: `LIVE`, `SOFT_STALE`, `STALE` — or `ALL` | `LIVE` | e.g. `status=LIVE,SOFT_STALE`. Unrecognized/empty values fall back to `LIVE`. |
 | `listingKind` | comma list: `TENANT`, `OWNER`, `AGENT` | all kinds | Who listed the property. |
 | `bhk` | comma list, e.g. `1 BHK,2 BHK` | all | Matches GullyNest's BHK values (`1 RK`, `1 BHK`, `2 BHK`, `3 BHK`, `4 BHK`, `4+ BHK`). |
 | `rentMin` / `rentMax` | integer | — | Filters `rentMonthly` (₹/month), inclusive. |
@@ -110,13 +110,13 @@ Records the outcome of a verification call. `{propertyId}` accepts either the pr
 
 | Action | Meaning | Status change | Transition guard |
 |---|---|---|---|
-| `available` | Owner confirmed the property is still available. | None — property stays as-is. | None. |
+| `available` | Owner confirmed the property is still available. | → `LIVE` (revives the listing if it was `SOFT_STALE`/`STALE`). | None. |
 | `soft_stale` | Owner didn't answer / gave an unclear answer. Listing stays visible on the marketplace but is hidden from bot search and treated as unavailable. | → `SOFT_STALE` | Current status must be `LIVE`, else `422`. |
 | `stale` | Owner confirmed the property is **no longer available**. Listing is fully hidden (marketplace, search, sitemap, and direct link). | → `STALE` | Current status must be `LIVE` or `SOFT_STALE`, else `422`. |
 
-**Every call to this endpoint stamps `voiceLastContactedAt` to the current time, regardless of `action`** — including `available`. This is what lets the next `GET` request's `contactedBefore` filter skip properties that were just verified.
+**Every call to this endpoint stamps `voiceLastContactedAt` to the current time, regardless of `action`.** This is what lets the next `GET` request's `contactedBefore` filter skip properties that were just verified.
 
-Reverting a property from `SOFT_STALE`/`STALE` back to `LIVE` is **not** exposed here — that's a human admin decision, made via the existing admin dashboard (`PATCH /api/admin/properties/[propertyId]` with `action: "unstale"`).
+A positive (`available`) outcome is the **only** way a `SOFT_STALE`/`STALE` listing gets reinstated automatically — it requires the voice agent to have re-confirmed availability directly with the owner. There is no human-review step in this path; the admin dashboard's `unstale` action (`PATCH /api/admin/properties/[propertyId]`) remains available separately for manual reinstatement.
 
 ### Example request
 
