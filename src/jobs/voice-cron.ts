@@ -1,8 +1,13 @@
 import {
+  VOICE_CRON_LISTING_KIND,
   VOICE_CRON_PROPERTY_STATUSES,
   VOICE_RECONTACT_COOLDOWN_MS,
 } from '../config/call-config.js';
 import type { Settings } from '../config/settings.js';
+import {
+  getCallLogRepository,
+  isDatabaseEnabled,
+} from '../db/call-log-repository.js';
 import {
   createGullyNestClientFromSettings,
   type GullyNestClient,
@@ -11,6 +16,7 @@ import type {
   ListVoicePropertiesQuery,
   VoiceAdminProperty,
 } from '../integrations/gullynest/types.js';
+import { evaluateDispatchCompliance } from './compliance.js';
 import {
   secureDispatchPropertyAvailabilityCall,
   type SecureDispatchResult,
@@ -29,12 +35,20 @@ export interface VoiceCronDeps {
   now?: Date;
   /** Cap on properties fetched + processed in one tick (default: unlimited). */
   maxProperties?: number;
+  /** Preview mode: fetch + evaluate as normal, but never actually dispatch a call. */
+  dryRun?: boolean;
+  /**
+   * Only fetch properties listed (created) in this window — ISO 8601. Hard
+   * requirement: runVoiceCronTick throws if either is missing.
+   */
+  createdAfter: string;
+  createdBefore: string;
 }
 
 export interface VoiceCronItemResult {
   propertyId: string;
   phoneNumber?: string;
-  status: 'dispatched' | 'skipped' | 'failed';
+  status: 'dispatched' | 'would_dispatch' | 'skipped' | 'failed';
   reason?: string;
   jobId?: string;
 }
@@ -42,9 +56,21 @@ export interface VoiceCronItemResult {
 export interface VoiceCronSummary {
   fetched: number;
   dispatched: number;
+  wouldDispatch: number;
   skipped: number;
   failed: number;
+  dryRun: boolean;
   items: VoiceCronItemResult[];
+}
+
+/** Read-only suppression check — safe to call in dry-run mode (no reservation/write). */
+async function checkSuppressed(phoneNumber: string): Promise<boolean> {
+  if (!isDatabaseEnabled()) return false;
+  try {
+    return await getCallLogRepository().isPhoneSuppressed(phoneNumber);
+  } catch {
+    return false;
+  }
 }
 
 /** One line per property, logged as each item's outcome is decided. */
@@ -104,6 +130,13 @@ export function isCallableVoiceStatus(
   return (CALLABLE_VOICE_STATUSES as readonly string[]).includes(status);
 }
 
+/** Voice cron only ever dials properties the owner themselves listed. */
+export function isOwnerListing(
+  listingKind: VoiceAdminProperty['listingKind'],
+): boolean {
+  return listingKind === VOICE_CRON_LISTING_KIND;
+}
+
 /** True when GullyNest last-contact is still inside the recontact cooldown window. */
 export function wasContactedWithinCooldown(
   property: Pick<VoiceAdminProperty, 'voiceLastContactedAt'>,
@@ -129,20 +162,34 @@ function dedupePropertiesById(
   return unique;
 }
 
+export interface FetchCallablePropertiesOptions {
+  now?: Date;
+  /** Cap on properties fetched (default: unlimited). */
+  maxProperties?: number;
+  /** Only fetch properties listed (created) in this window — ISO 8601, both required. */
+  createdAfter: string;
+  createdBefore: string;
+}
+
 /**
- * Fetch LIVE + SOFT_STALE properties that were never contacted, or last contacted
- * before the 7-day recontact cutoff. One request — GullyNest's `status` param takes
- * a comma list, so both statuses are requested together instead of one call each.
+ * Fetch LIVE + SOFT_STALE, owner-listed properties created within [createdAfter,
+ * createdBefore) that were never voice-contacted, or last contacted before the
+ * 7-day recontact cutoff. One request — GullyNest's `status` param takes a comma
+ * list, so both statuses are requested together instead of one call each.
  */
 export async function fetchCallableVoiceProperties(
   client: GullyNestClient,
-  now: Date = new Date(),
-  maxProperties?: number,
+  options: FetchCallablePropertiesOptions,
 ): Promise<VoiceAdminProperty[]> {
+  const now = options.now ?? new Date();
+  const { maxProperties, createdAfter, createdBefore } = options;
   const contactedBefore = voiceContactedBeforeCutoff(now);
   const query: Omit<ListVoicePropertiesQuery, 'page'> = {
     status: VOICE_CRON_PROPERTY_STATUSES.join(','),
+    listingKind: VOICE_CRON_LISTING_KIND,
     contactedBefore,
+    createdAfter,
+    createdBefore,
   };
 
   const fetched =
@@ -152,6 +199,7 @@ export async function fetchCallableVoiceProperties(
 
   const properties = dedupePropertiesById(fetched).filter((property) => {
     if (!isCallableVoiceStatus(property.status)) return false;
+    if (!isOwnerListing(property.listingKind)) return false;
     if (wasContactedWithinCooldown(property, now)) return false;
     return true;
   });
@@ -177,15 +225,22 @@ export async function runVoiceCronTick(
     );
   }
 
+  if (!deps?.createdAfter || !deps?.createdBefore) {
+    throw new Error(
+      'createdAfter and createdBefore are required for voice-cron (pass --created-after/--created-before)',
+    );
+  }
+
   const dispatch =
     deps?.dispatch ?? secureDispatchPropertyAvailabilityCall;
   const now = deps?.now ?? new Date();
 
-  const properties = await fetchCallableVoiceProperties(
-    client,
+  const properties = await fetchCallableVoiceProperties(client, {
     now,
-    deps?.maxProperties,
-  );
+    maxProperties: deps?.maxProperties,
+    createdAfter: deps.createdAfter,
+    createdBefore: deps.createdBefore,
+  });
   const items: VoiceCronItemResult[] = [];
   const record = (item: VoiceCronItemResult): void => {
     items.push(item);
@@ -195,27 +250,10 @@ export async function runVoiceCronTick(
    *  the rest queue for a later tick instead of ringing the same person back-to-back. */
   const dispatchedPhones = new Set<string>();
 
+  // Status/listingKind/cooldown are already enforced by fetchCallableVoiceProperties's
+  // own filter above — `properties` never contains a row that would fail them, so
+  // there's nothing to re-check here beyond what's actually unvalidated so far.
   for (const property of properties) {
-    if (!isCallableVoiceStatus(property.status)) {
-      record({
-        propertyId: property.id,
-        phoneNumber: property.listerPhone ?? undefined,
-        status: 'skipped',
-        reason: `status_${property.status.toLowerCase()}`,
-      });
-      continue;
-    }
-
-    if (wasContactedWithinCooldown(property, now)) {
-      record({
-        propertyId: property.id,
-        phoneNumber: property.listerPhone ?? undefined,
-        status: 'skipped',
-        reason: 'contacted_within_week',
-      });
-      continue;
-    }
-
     const input = propertyToJobInput(property, settings);
     if (!input) {
       record({
@@ -237,6 +275,30 @@ export async function runVoiceCronTick(
       continue;
     }
     dispatchedPhones.add(input.owner.phoneNumber);
+
+    if (deps?.dryRun) {
+      const compliance = evaluateDispatchCompliance({
+        settings,
+        isSuppressed: await checkSuppressed(input.owner.phoneNumber),
+        now,
+      });
+      if (!compliance.allowed) {
+        record({
+          propertyId: property.id,
+          phoneNumber: input.owner.phoneNumber,
+          status: 'skipped',
+          reason: `would_be_blocked: ${compliance.reason}`,
+        });
+        continue;
+      }
+
+      record({
+        propertyId: property.id,
+        phoneNumber: input.owner.phoneNumber,
+        status: 'would_dispatch',
+      });
+      continue;
+    }
 
     const job = createPropertyAvailabilityJob(input);
     try {
@@ -272,8 +334,10 @@ export async function runVoiceCronTick(
   return {
     fetched: properties.length,
     dispatched: items.filter((i) => i.status === 'dispatched').length,
+    wouldDispatch: items.filter((i) => i.status === 'would_dispatch').length,
     skipped: items.filter((i) => i.status === 'skipped').length,
     failed: items.filter((i) => i.status === 'failed').length,
+    dryRun: Boolean(deps?.dryRun),
     items,
   };
 }

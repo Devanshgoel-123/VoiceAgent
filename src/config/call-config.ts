@@ -21,3 +21,5 @@ export const VOICE_RECONTACT_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
  * unless we pass it in the query.
  */
 export const VOICE_CRON_PROPERTY_STATUSES = ['LIVE', 'SOFT_STALE'] as const;
+/** Voice cron only calls owner-listed properties — not tenant or agent listings. */
+export const VOICE_CRON_LISTING_KIND = 'OWNER';

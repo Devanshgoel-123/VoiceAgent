@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-// persistCallResult (below) calls the real safeCompleteCallLog/purgeExpiredCallData —
-// mock the DB layer so these tests never touch a real database (this repo's .env loads
-// a real DATABASE_URL via dotenv/config, imported transitively through settings.ts).
+// persistCallResult (below) calls the real safeCompleteCallLog/purgeExpiredCallData, and
+// dry-run mode in voice-cron.ts calls isDatabaseEnabled/getCallLogRepository().isPhoneSuppressed —
+// mock the DB layer so these tests never touch a real database (this repo's .env loads a real
+// DATABASE_URL via dotenv/config, imported transitively through settings.ts).
+const { isPhoneSuppressedMock } = vi.hoisted(() => ({
+  isPhoneSuppressedMock: vi.fn(async () => false),
+}));
 vi.mock('../src/db/call-log-repository.js', () => ({
   safeCompleteCallLog: vi.fn(async () => {}),
+  isDatabaseEnabled: () => true,
+  getCallLogRepository: () => ({
+    isPhoneSuppressed: isPhoneSuppressedMock,
+  }),
 }));
 vi.mock('../src/jobs/retention.js', () => ({
   purgeExpiredCallData: vi.fn(async () => 0),
@@ -31,7 +39,10 @@ import {
   voiceContactedBeforeCutoff,
   wasContactedWithinCooldown,
 } from '../src/jobs/voice-cron.js';
-import { parseMaxProperties } from '../src/scripts/run-voice-cron.js';
+import {
+  parseListingDateRange,
+  parseMaxProperties,
+} from '../src/scripts/run-voice-cron.js';
 import type { VoiceAdminProperty } from '../src/integrations/gullynest/types.js';
 
 function snapshot(
@@ -222,6 +233,11 @@ describe('GullyNestClient', () => {
   }, 2000);
 });
 
+const LISTING_DATE_RANGE = {
+  createdAfter: '2026-01-01T00:00:00.000Z',
+  createdBefore: '2026-08-01T00:00:00.000Z',
+};
+
 function baseSettings(overrides: Partial<Settings> = {}): Settings {
   return {
     livekitUrl: 'wss://example.livekit.cloud',
@@ -319,7 +335,10 @@ describe('voice cron property status filters', () => {
   it('fetches LIVE + SOFT_STALE in a single comma-joined status request', async () => {
     const listAllProperties = vi.fn(async () => []);
 
-    await fetchCallableVoiceProperties({ listAllProperties } as never, now);
+    await fetchCallableVoiceProperties({ listAllProperties } as never, {
+      now,
+      ...LISTING_DATE_RANGE,
+    });
 
     expect(listAllProperties).toHaveBeenCalledOnce();
     const [query] = listAllProperties.mock.calls[0]!;
@@ -338,7 +357,7 @@ describe('voice cron property status filters', () => {
 
     const properties = await fetchCallableVoiceProperties(
       { listAllProperties } as never,
-      now,
+      { now, ...LISTING_DATE_RANGE },
     );
 
     expect(listAllProperties).toHaveBeenCalledOnce();
@@ -385,19 +404,43 @@ describe('voice recontact filters', () => {
 
     const properties = await fetchCallableVoiceProperties(
       { listAllProperties } as never,
-      now,
+      { now, ...LISTING_DATE_RANGE },
     );
 
     expect(listAllProperties).toHaveBeenCalledOnce();
     expect(listAllProperties).toHaveBeenCalledWith({
       status: 'LIVE,SOFT_STALE',
+      listingKind: 'OWNER',
       contactedBefore: '2026-07-20T12:00:00.000Z',
+      ...LISTING_DATE_RANGE,
     });
     expect(properties.map((p) => p.id).sort()).toEqual(['live-1', 'soft-1']);
+  });
+
+  it('drops TENANT/AGENT listings even if the API returns them', async () => {
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'owner-1', listingKind: 'OWNER' }),
+      property({ id: 'tenant-1', listingKind: 'TENANT' }),
+      property({ id: 'agent-1', listingKind: 'AGENT' }),
+    ]);
+
+    const properties = await fetchCallableVoiceProperties(
+      { listAllProperties } as never,
+      { now, ...LISTING_DATE_RANGE },
+    );
+
+    expect(listAllProperties).toHaveBeenCalledWith(
+      expect.objectContaining({ listingKind: 'OWNER' }),
+    );
+    expect(properties.map((p) => p.id)).toEqual(['owner-1']);
   });
 });
 
 describe('runVoiceCronTick', () => {
+  afterEach(() => {
+    isPhoneSuppressedMock.mockReset().mockResolvedValue(false);
+  });
+
   it('dispatches each callable property from the API response', async () => {
     const now = new Date('2026-07-27T12:00:00.000Z');
     const listAllProperties = vi.fn(async () => [
@@ -427,12 +470,15 @@ describe('runVoiceCronTick', () => {
       client: { listAllProperties } as never,
       dispatch,
       now,
+      ...LISTING_DATE_RANGE,
     });
 
     expect(listAllProperties).toHaveBeenCalledOnce();
     expect(listAllProperties).toHaveBeenCalledWith({
       status: 'LIVE,SOFT_STALE',
+      listingKind: 'OWNER',
       contactedBefore: '2026-07-20T12:00:00.000Z',
+      ...LISTING_DATE_RANGE,
     });
     expect(summary.skipped).toBe(1);
     expect(summary.dispatched).toBe(2);
@@ -468,6 +514,7 @@ describe('runVoiceCronTick', () => {
         client: { listAllProperties } as never,
         dispatch,
         now,
+        ...LISTING_DATE_RANGE,
       });
 
       const dispatchedLine = JSON.parse(
@@ -516,6 +563,7 @@ describe('runVoiceCronTick', () => {
         client: { listAllProperties } as never,
         dispatch,
         now,
+        ...LISTING_DATE_RANGE,
       });
 
       expect(errorSpy).toHaveBeenCalledOnce();
@@ -548,6 +596,7 @@ describe('runVoiceCronTick', () => {
       client: { listAllProperties } as never,
       dispatch,
       now,
+      ...LISTING_DATE_RANGE,
     });
 
     expect(summary.dispatched).toBe(0);
@@ -582,6 +631,7 @@ describe('runVoiceCronTick', () => {
       client: { listAllProperties } as never,
       dispatch,
       now,
+      ...LISTING_DATE_RANGE,
     });
 
     expect(summary.dispatched).toBe(1);
@@ -617,6 +667,7 @@ describe('runVoiceCronTick', () => {
       client: { listAllProperties } as never,
       dispatch,
       now,
+      ...LISTING_DATE_RANGE,
     });
 
     // Only one call per phone number this tick — flat-1 goes out, flat-2 (same
@@ -647,6 +698,58 @@ describe('runVoiceCronTick', () => {
       }),
     );
   });
+
+  it('dry run: lists what would be dispatched without calling dispatch or reserving anything', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'preview-1', listerPhone: '+919666666666' }),
+    ]);
+    const dispatch = vi.fn();
+
+    const summary = await runVoiceCronTick(baseSettings(), {
+      client: { listAllProperties } as never,
+      dispatch,
+      now,
+      dryRun: true,
+      ...LISTING_DATE_RANGE,
+    });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(summary.dryRun).toBe(true);
+    expect(summary.dispatched).toBe(0);
+    expect(summary.wouldDispatch).toBe(1);
+    expect(summary.items[0]).toMatchObject({
+      propertyId: 'preview-1',
+      status: 'would_dispatch',
+      phoneNumber: '+919666666666',
+    });
+    expect(summary.items[0]!.jobId).toBeUndefined();
+  });
+
+  it('dry run: still shows a property as skipped if it would be blocked by compliance', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'suppressed-1', listerPhone: '+919777777777' }),
+    ]);
+    const dispatch = vi.fn();
+    isPhoneSuppressedMock.mockResolvedValueOnce(true);
+
+    const summary = await runVoiceCronTick(baseSettings(), {
+      client: { listAllProperties } as never,
+      dispatch,
+      now,
+      dryRun: true,
+      ...LISTING_DATE_RANGE,
+    });
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(summary.wouldDispatch).toBe(0);
+    expect(summary.items[0]).toMatchObject({
+      propertyId: 'suppressed-1',
+      status: 'skipped',
+      reason: 'would_be_blocked: suppressed',
+    });
+  });
 });
 
 describe('parseMaxProperties (--max-properties CLI flag)', () => {
@@ -669,6 +772,60 @@ describe('parseMaxProperties (--max-properties CLI flag)', () => {
   });
 });
 
+describe('parseListingDateRange (--created-after/--created-before, YYYY-MM-DD IST)', () => {
+  it('converts IST calendar dates to the matching UTC instant', () => {
+    expect(
+      parseListingDateRange(['--created-after=2026-07-01', '--created-before=2026-07-15']),
+    ).toEqual({
+      createdAfter: '2026-06-30T18:30:00.000Z',
+      createdBefore: '2026-07-14T18:30:00.000Z',
+    });
+  });
+
+  it('throws if either flag is missing', () => {
+    expect(() => parseListingDateRange(['--created-after=2026-07-01'])).toThrow(
+      /both required/,
+    );
+    expect(() => parseListingDateRange(['--created-before=2026-07-15'])).toThrow(
+      /both required/,
+    );
+    expect(() => parseListingDateRange([])).toThrow(/both required/);
+  });
+
+  it('explains inclusive/exclusive semantics in the missing-flag error', () => {
+    expect(() => parseListingDateRange([])).toThrow(
+      /--created-after is inclusive.*--created-before is exclusive/s,
+    );
+  });
+
+  it('rejects ISO datetimes and other non-YYYY-MM-DD input', () => {
+    expect(() =>
+      parseListingDateRange([
+        '--created-after=2026-07-01T00:00:00Z',
+        '--created-before=2026-07-15',
+      ]),
+    ).toThrow(/YYYY-MM-DD/);
+    expect(() =>
+      parseListingDateRange(['--created-after=07-01-2026', '--created-before=2026-07-15']),
+    ).toThrow(/YYYY-MM-DD/);
+  });
+
+  it('rejects a calendar date that does not exist', () => {
+    expect(() =>
+      parseListingDateRange(['--created-after=2026-02-30', '--created-before=2026-07-15']),
+    ).toThrow(/not a real calendar date/);
+  });
+
+  it('rejects a range where after is not earlier than before', () => {
+    expect(() =>
+      parseListingDateRange(['--created-after=2026-07-15', '--created-before=2026-07-01']),
+    ).toThrow(/must be earlier/);
+    expect(() =>
+      parseListingDateRange(['--created-after=2026-07-01', '--created-before=2026-07-01']),
+    ).toThrow(/must be earlier/);
+  });
+});
+
 describe('fetchCallableVoiceProperties maxProperties cap', () => {
   const now = new Date('2026-07-27T12:00:00.000Z');
 
@@ -681,7 +838,7 @@ describe('fetchCallableVoiceProperties maxProperties cap', () => {
 
     const properties = await fetchCallableVoiceProperties(
       { listAllProperties } as never,
-      now,
+      { now, ...LISTING_DATE_RANGE },
     );
 
     expect(properties).toHaveLength(3);
@@ -698,8 +855,7 @@ describe('fetchCallableVoiceProperties maxProperties cap', () => {
 
     const properties = await fetchCallableVoiceProperties(
       { listAllProperties } as never,
-      now,
-      2,
+      { now, maxProperties: 2, ...LISTING_DATE_RANGE },
     );
 
     expect(properties).toHaveLength(2);
