@@ -24,7 +24,7 @@ services:
   - type: worker
     name: gully-voice-worker
     runtime: node
-    plan: starter
+    plan: standard
     region: singapore
     buildCommand: npm ci && npm run build
     startCommand: node dist/workers/property-availability.worker.js start
@@ -92,7 +92,7 @@ envVarGroups:
       - key: APP_ENV
         value: production
       - key: CALL_DEBUG_LOGGING
-        value: "false"
+        value: "true"
       - key: CALL_DATA_RETENTION_DAYS
         value: "15"
       - key: AGENT_NAME
@@ -100,9 +100,9 @@ envVarGroups:
       - key: COMPANY_NAME
         value: Galynest
       - key: COMPANY_WEBSITE
-        value: galynest.com
+        value: gullynest.com
       - key: CALLER_NAME
-        value: Aditi
+        value: Jitesh
       - key: TTS_VOLUME
         value: "0.55"
       - key: TTS_SPEED
