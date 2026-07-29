@@ -5,6 +5,8 @@ import {
   buildInferenceLanguageInstruction,
   buildPropertyTools,
   classifyClearAvailabilityResponse,
+  commitOwnerTurnTranscript,
+  isCountableUnclearAvailabilityResponse,
   isClearAvailabilityResponse,
   withInferenceLanguageInstruction,
 } from '../src/agents/property-availability/agent.js';
@@ -35,6 +37,40 @@ describe('per-inference language instruction', () => {
       type: 'message',
       role: 'system',
     });
+  });
+});
+
+describe('committed owner transcript', () => {
+  it('stores the full assembled turn for later tool validation', () => {
+    let committed: string | undefined;
+    const lifecycle = {
+      setCommittedOwnerTranscript(transcript: string) {
+        committed = transcript;
+      },
+    } as Pick<CallLifecycle, 'setCommittedOwnerTranscript'> as CallLifecycle;
+
+    const fullTurn =
+      'Okay, but I have multiple BHKs. I want to understand. Can you tell me the address?';
+    commitOwnerTurnTranscript(lifecycle, fullTurn);
+
+    expect(committed).toBe(fullTurn);
+  });
+
+  it('stores the sanitized full turn instead of an unsupported STT prefix', () => {
+    let committed: string | undefined;
+    const lifecycle = {
+      setCommittedOwnerTranscript(transcript: string) {
+        committed = transcript;
+      },
+    } as Pick<CallLifecycle, 'setCommittedOwnerTranscript'> as CallLifecycle;
+
+    const sanitized = commitOwnerTurnTranscript(
+      lifecycle,
+      'ആ. Which property is this?',
+    );
+
+    expect(sanitized).toBe('Which property is this?');
+    expect(committed).toBe('Which property is this?');
   });
 });
 
@@ -148,13 +184,19 @@ describe('recordPropertyAvailability tool behavior', () => {
   it.each([
     ['English', 'No.'],
     ['English', 'No, it is not available.'],
+    ['English', 'The property is not available.'],
+    ['English', 'It is no longer available.'],
     ['English', 'Nope, it has been rented.'],
     ['Hindi', 'नहीं।'],
     ['Hindi', 'जी नहीं।'],
     ['Hindi', 'नहीं है।'],
+    ['Hindi', 'Property available नहीं है।'],
+    ['Hindi', 'Property अवेलेबल नहीं है।'],
     ['Hindi', 'नहीं, किराए पर चली गई है।'],
     ['Hindi (Romanized)', 'nahi, rented out hai'],
     ['Kannada', 'ಇಲ್ಲ.'],
+    ['Kannada', 'Property available ಇಲ್ಲ.'],
+    ['Kannada', 'Property ಲಭ್ಯವಿಲ್ಲ.'],
     ['Kannada', 'ಇಲ್ಲ, rent ಆಗಿದೆ.'],
     ['Kannada', 'ಇಲ್ಲ, available ಇಲ್ಲ.'],
   ])('accepts a clear negative in %s: "%s"', (_language, text) => {
@@ -203,10 +245,13 @@ describe('recordPropertyAvailability tool behavior', () => {
   it.each([
     ['yes', 'Yes, it is available.'],
     ['no', 'No, it has been rented.'],
+    ['no', 'The property is not available.'],
     ['yes', 'जी हाँ, अवेलेबल है।'],
     ['no', 'जी नहीं, available नहीं है।'],
+    ['no', 'Property अवेलेबल नहीं है।'],
     ['yes', 'ಹೌದು, available ಇದೆ.'],
     ['no', 'ಇಲ್ಲ, rent ಆಗಿದೆ.'],
+    ['no', 'Property available ಇಲ್ಲ.'],
     [null, 'जी हाँ नहीं।'],
     [null, 'Yes and no.'],
   ] as const)('classifies %s polarity from the transcript "%s"', (expected, text) => {
@@ -244,6 +289,73 @@ describe('recordPropertyAvailability tool behavior', () => {
     );
     expect(lifecycle.scheduleHangup).toHaveBeenCalledWith('no');
     expect(state.propertyAvailable).toBe('no');
+  });
+
+  it('asks once after uncertainty, then records manual intervention and hangs up', async () => {
+    let ownerResponse = "I don't know.";
+    let committedTurn = 1;
+    const lifecycle: CallLifecycle = {
+      scheduleHangup: vi.fn(),
+      setSpokenLanguage: vi.fn(),
+      getCurrentLanguage: vi.fn(() => 'en-IN'),
+      getLastOwnerTranscript: vi.fn(() => ownerResponse),
+      getCommittedOwnerTurnSequence: vi.fn(() => committedTurn),
+      recordOwnerOutcome: vi.fn(),
+      recordDoNotCall: vi.fn(),
+    };
+    const state = {
+      jobId: 'job-unclear-test',
+      companyName: 'Galynest',
+      companyWebsite: 'galynest.com',
+      callMetadata: {} as CallMetadata,
+      propertyAvailable: 'not_asked' as YesNoAnswer,
+      outcomeRecorded: false,
+      doNotCallRecorded: false,
+      unclearAttemptCount: 0,
+    };
+    const tools = buildPropertyTools(state, lifecycle);
+
+    const first = await tools.recordPropertyAvailability.execute({
+      isAvailable: false,
+      ownerResponse,
+    });
+    expect(first).toContain('first availability response was unclear');
+    expect(lifecycle.scheduleHangup).not.toHaveBeenCalled();
+
+    // A model retry within the same owner turn must not consume attempt two.
+    await tools.recordPropertyAvailability.execute({
+      isAvailable: false,
+      ownerResponse,
+    });
+    expect(state.unclearAttemptCount).toBe(1);
+    expect(lifecycle.scheduleHangup).not.toHaveBeenCalled();
+
+    ownerResponse = 'Maybe, I am not sure.';
+    committedTurn = 2;
+    const second = await tools.recordPropertyAvailability.execute({
+      isAvailable: true,
+      ownerResponse,
+    });
+
+    expect(second).toContain('Manual intervention needed');
+    expect(lifecycle.recordOwnerOutcome).toHaveBeenCalledWith(
+      'unclear',
+      expect.stringContaining('Manual intervention needed'),
+    );
+    expect(lifecycle.scheduleHangup).toHaveBeenCalledWith();
+    expect(state.propertyAvailable).toBe('unclear');
+  });
+
+  it.each([
+    ["I don't know.", true],
+    ['Maybe.', true],
+    ['Okay.', true],
+    ['Which property?', false],
+    ['Can you tell me the address?', false],
+    ['Please hang up.', false],
+    ['This property is not mine.', false],
+  ])('classifies whether unclear response "%s" consumes an attempt', (text, expected) => {
+    expect(isCountableUnclearAvailabilityResponse(text)).toBe(expected);
   });
 
   it('rejects an ambiguous availability tool call without hanging up', async () => {

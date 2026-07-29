@@ -30,6 +30,7 @@ import { applySpokenLanguage } from './spoken-language.js';
 import {
   enforceSelectedSpeechLanguage,
   filterToolCallMarkup,
+  normalizeSpeechText,
 } from './tts-text-transforms.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
@@ -48,6 +49,9 @@ export interface CallLifecycle {
   setSpokenLanguage(language: LanguageCode, reason?: string): void;
   getCurrentLanguage(): LanguageCode;
   getLastOwnerTranscript(): string | undefined;
+  /** Full assembled owner turn committed to the LLM context. */
+  setCommittedOwnerTranscript?(transcript: string): void;
+  getCommittedOwnerTurnSequence?(): number;
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void;
   /** Owner explicitly asked not to be called again. */
   recordDoNotCall(reason: string): void;
@@ -69,6 +73,28 @@ export interface LiveKitCallSessionOptions {
   logger?: ReturnType<typeof log>;
   /** Composition root persists call results after the session closes. */
   onPersist?: (snapshot: CallLogSnapshot) => Promise<void>;
+}
+
+/** Debounces final STT fragments while allowing continued speech to cancel. */
+export class OwnerTurnCommitScheduler {
+  private timer?: ReturnType<typeof setTimeout>;
+
+  constructor(private readonly delayMs: number) {}
+
+  schedule(commit: () => void): void {
+    this.cancel();
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      commit();
+    }, this.delayMs);
+  }
+
+  cancel(): boolean {
+    if (!this.timer) return false;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    return true;
+  }
 }
 
 /** One outbound call: AgentSession lifecycle, language, greeting, hangup, persist. */
@@ -103,6 +129,8 @@ export class LiveKitCallSession implements CallLifecycle {
   private sessionErrorCount = 0;
   private ownerRespondedAfterOpening = false;
   private lastFinalOwnerTranscript?: string;
+  private lastCommittedOwnerTranscript?: string;
+  private committedOwnerTurnSequence = 0;
   private pendingLanguageSwitch: LanguageCode | null = null;
   private pendingLanguageSwitchCount = 0;
 
@@ -125,6 +153,7 @@ export class LiveKitCallSession implements CallLifecycle {
       ttsTextTransforms: [
         'filter_markdown',
         filterToolCallMarkup,
+        normalizeSpeechText,
         (input) =>
           enforceSelectedSpeechLanguage(input, () =>
             this.languageManager.getCurrentLanguage(),
@@ -228,7 +257,18 @@ export class LiveKitCallSession implements CallLifecycle {
   }
 
   getLastOwnerTranscript(): string | undefined {
-    return this.lastFinalOwnerTranscript;
+    return this.lastCommittedOwnerTranscript ?? this.lastFinalOwnerTranscript;
+  }
+
+  setCommittedOwnerTranscript(transcript: string): void {
+    const normalized = transcript.trim();
+    if (!normalized) return;
+    this.lastCommittedOwnerTranscript = normalized;
+    this.committedOwnerTurnSequence += 1;
+  }
+
+  getCommittedOwnerTurnSequence(): number {
+    return this.committedOwnerTurnSequence;
   }
 
   private shouldApplyLanguageSwitch(
@@ -388,22 +428,29 @@ export class LiveKitCallSession implements CallLifecycle {
 
   private attachSessionEvents(session: voice.AgentSession): void {
     let agentState: voice.AgentState = 'initializing';
-    let turnCommitTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const clearTurnCommitTimer = () => {
-      if (turnCommitTimer) {
-        clearTimeout(turnCommitTimer);
-        turnCommitTimer = undefined;
-      }
-    };
+    const turnCommitScheduler = new OwnerTurnCommitScheduler(
+      TURN_COMMIT_FALLBACK_MS,
+    );
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
       agentState = ev.newState;
       callInfo(`agent: ${ev.oldState} → ${ev.newState}`, this.logger);
       if (ev.newState === 'thinking' || ev.newState === 'speaking') {
-        clearTurnCommitTimer();
+        turnCommitScheduler.cancel();
         // Agent activity must not cancel the timer waiting for the owner.
         this.clearOpeningTimer();
+      }
+    });
+
+    session.on(voice.AgentSessionEventTypes.UserStateChanged, (ev) => {
+      if (ev.newState === 'speaking') {
+        // A new speech segment means the previous final transcript was only a
+        // pause, not the end of the owner's complete thought.
+        turnCommitScheduler.cancel();
+        this.lastCommittedOwnerTranscript = undefined;
+        this.ownerRespondedAfterOpening = false;
+        this.armOwnerResponseTimeout();
+        callDebug('turn commit: cancelled because owner resumed speaking', this.logger);
       }
     });
 
@@ -455,7 +502,7 @@ export class LiveKitCallSession implements CallLifecycle {
         ? LanguageManager.detectUnsupportedLanguage(ev.transcript, ev.language)
         : null;
       if (unsupportedLanguage) {
-        clearTurnCommitTimer();
+        turnCommitScheduler.cancel();
         session.clearUserTurn();
         this.resetPendingLanguageSwitch();
         this.clearOpeningGreeting();
@@ -555,9 +602,7 @@ export class LiveKitCallSession implements CallLifecycle {
       }
 
       // Unclear / other speech → minimum LLM brain.
-      clearTurnCommitTimer();
-      turnCommitTimer = setTimeout(() => {
-        turnCommitTimer = undefined;
+      turnCommitScheduler.schedule(() => {
         if (
           !this.hangupScheduled &&
           !this.hangupStarted &&
@@ -566,7 +611,7 @@ export class LiveKitCallSession implements CallLifecycle {
         ) {
           session.commitUserTurn();
         }
-      }, TURN_COMMIT_FALLBACK_MS);
+      });
     });
   }
 

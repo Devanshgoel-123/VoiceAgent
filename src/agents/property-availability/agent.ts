@@ -23,6 +23,8 @@ interface PropertyWorkflowState {
   propertyAvailable: YesNoAnswer;
   outcomeRecorded: boolean;
   doNotCallRecorded: boolean;
+  unclearAttemptCount?: number;
+  lastUnclearTurnKey?: number | string;
 }
 
 function createWorkflowState(metadata: CallMetadata): PropertyWorkflowState {
@@ -36,6 +38,7 @@ function createWorkflowState(metadata: CallMetadata): PropertyWorkflowState {
     propertyAvailable: 'not_asked',
     outcomeRecorded: false,
     doNotCallRecorded: false,
+    unclearAttemptCount: 0,
   };
 }
 
@@ -73,7 +76,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
     newMessage: llm.ChatMessage,
   ): Promise<void> {
     const original = newMessage.textContent?.trim() ?? '';
-    const sanitized = stripUnsupportedLanguageFragments(original);
+    const sanitized = commitOwnerTurnTranscript(this.lifecycle, original);
     if (sanitized && sanitized !== original) {
       newMessage.content = [sanitized];
       callDebug(
@@ -154,6 +157,16 @@ export function withInferenceLanguageInstruction(
   return inferenceContext;
 }
 
+export function commitOwnerTurnTranscript(
+  lifecycle: CallLifecycle | undefined,
+  transcript: string,
+): string {
+  const original = transcript.trim();
+  const sanitized = stripUnsupportedLanguageFragments(original);
+  lifecycle?.setCommittedOwnerTranscript?.(sanitized || original);
+  return sanitized;
+}
+
 function recordAvailabilityOutcome(
   state: PropertyWorkflowState,
   lifecycle: CallLifecycle | undefined,
@@ -195,6 +208,15 @@ const QUESTION_PATTERNS = [
 const AVAILABILITY_CONTEXT =
   /available|unavailable|rent|still\s+(?:listed|vacant)|rented|leased|occupied|sold|उपलब्ध|अवेलेबल|एवेलेबल|अनअवेलेबल|किरा(?:ये|ए)\s+पर|ಲಭ್ಯ|ಅವೈಲೇಬಲ್|ಬಾಡಿಗೆ/u;
 
+const NEGATED_AVAILABILITY_PATTERNS = [
+  /\b(?:not|isn['’]?t|no\s+longer)\s+available\b/i,
+  /(?:उपलब्ध|अवेलेबल|एवेलेबल|available)\s+नहीं/u,
+  /(?:ಲಭ್ಯವಿಲ್ಲ|(?:ಲಭ್ಯ|ಅವೈಲೇಬಲ್|available)\s+(?:ಇಲ್ಲ|ಇಲ್ಲಾ))/u,
+];
+
+const HANGUP_REQUEST_PATTERN =
+  /\b(?:please\s+)?hang\s+up\b|फोन\s+रख|ಕಾಲ್\s+ಕಟ್/u;
+
 /**
  * Tool-call guard: prompts can guide the model, but only code should decide
  * whether an ambiguous question is allowed to end the call as a yes/no.
@@ -209,6 +231,9 @@ export function classifyClearAvailabilityResponse(
     return null;
   }
   if (QUESTION_PATTERNS.some((pattern) => pattern.test(response))) return null;
+  if (NEGATED_AVAILABILITY_PATTERNS.some((pattern) => pattern.test(response))) {
+    return 'no';
+  }
 
   const intent = new LanguageManager().detectFromText(response);
   const polarity =
@@ -226,11 +251,20 @@ export function isClearAvailabilityResponse(ownerResponse: string): boolean {
   return classifyClearAvailabilityResponse(ownerResponse) !== null;
 }
 
+export function isCountableUnclearAvailabilityResponse(
+  ownerResponse: string,
+): boolean {
+  const response = ownerResponse.trim();
+  if (!response || isOwnershipMismatch(response)) return false;
+  if (HANGUP_REQUEST_PATTERN.test(response)) return false;
+  return !QUESTION_PATTERNS.some((pattern) => pattern.test(response));
+}
+
 export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: CallLifecycle) {
   return {
     recordPropertyAvailability: llm.tool({
       description:
-        'Record a clear yes/no answer about whether the property is still available for rent. Do NOT call this for questions, clarifications, or statements that only happen to contain yes/no. After this tool, do not speak — the system plays a scripted closing and hangs up.',
+        'Validate and record the owner response to whether the property is still available. Call after a direct availability response, including "not sure" or "I do not know", so the system can track unclear attempts. Do NOT call for owner questions or property clarifications. After a successful record, do not speak — the system plays a scripted closing and hangs up.',
       parameters: z.object({
         isAvailable: z.boolean(),
         ownerResponse: z.string(),
@@ -248,8 +282,46 @@ export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: Cal
           } accepted=${polarity !== null}`,
         );
         if (!polarity) {
+          if (isCountableUnclearAvailabilityResponse(actualOwnerResponse)) {
+            const turnKey =
+              lifecycle?.getCommittedOwnerTurnSequence?.() ??
+              actualOwnerResponse;
+            if (state.lastUnclearTurnKey !== turnKey) {
+              state.lastUnclearTurnKey = turnKey;
+              state.unclearAttemptCount = (state.unclearAttemptCount ?? 0) + 1;
+            }
+
+            if ((state.unclearAttemptCount ?? 0) >= 2) {
+              state.outcomeRecorded = true;
+              state.propertyAvailable = 'unclear';
+              lifecycle?.recordOwnerOutcome(
+                'unclear',
+                `Manual intervention needed: owner gave two unclear availability responses. Latest response: "${actualOwnerResponse}"`,
+              );
+
+              if (!lifecycle) {
+                callError(
+                  'recordPropertyAvailability: no lifecycle — unclear hangup will not run',
+                );
+                return 'Manual intervention needed. Do not speak.';
+              }
+
+              lifecycle.scheduleHangup();
+              return (
+                'Manual intervention needed after two unclear responses. ' +
+                'Do not speak — the system will thank the owner and hang up.'
+              );
+            }
+
+            return (
+              'Not recorded: the first availability response was unclear. ' +
+              'Do not call this tool again for the same owner turn. Ask once, briefly, ' +
+              'whether the property is still available.'
+            );
+          }
+
           return (
-            'Not recorded: this was a question, uncertainty, or hangup request—not a ' +
+            'Not recorded: this was a question, clarification, or hangup request—not a ' +
             'clear property-availability answer. Answer the owner briefly or ask once ' +
             'whether the property is still available.'
           );
