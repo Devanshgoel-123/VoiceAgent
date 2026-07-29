@@ -1,6 +1,9 @@
 import { ReadableStream } from 'node:stream/web';
 import { describe, expect, it } from 'vitest';
-import { filterToolCallMarkup } from '../src/adapters/tts-text-transforms.js';
+import {
+  enforceSelectedSpeechLanguage,
+  filterToolCallMarkup,
+} from '../src/adapters/tts-text-transforms.js';
 
 function chunked(...chunks: string[]): ReadableStream<string> {
   return new ReadableStream<string>({
@@ -48,5 +51,56 @@ describe('filterToolCallMarkup', () => {
     );
 
     expect(output).toBe('');
+  });
+});
+
+describe('enforceSelectedSpeechLanguage', () => {
+  it('replaces Malayalam output on an English turn before it reaches TTS', async () => {
+    const output = await collect(
+      enforceSelectedSpeechLanguage(
+        chunked(
+          'ഈ വിലാസം 42, 5th Cross, Indiranagar എന്നാണ്.',
+          'ഈ പ്രോപ്പർട്ടി ഇപ്പോഴും ലഭ്യമാണോ?',
+        ),
+        () => 'en-IN',
+      ),
+    );
+
+    expect(output).toBe(
+      'Sorry, I had trouble generating that response. Please repeat your question in English, Hindi, or Kannada.',
+    );
+    expect(output).not.toMatch(/\p{Script=Malayalam}/u);
+  });
+
+  it('allows only the selected supported language plus Latin property details', async () => {
+    await expect(
+      collect(
+        enforceSelectedSpeechLanguage(
+          chunked('पता 42, 5th Cross, Indiranagar है।'),
+          () => 'hi-IN',
+        ),
+      ),
+    ).resolves.toBe('पता 42, 5th Cross, Indiranagar है।');
+
+    await expect(
+      collect(
+        enforceSelectedSpeechLanguage(
+          chunked('ವಿಳಾಸ 42, 5th Cross, Indiranagar ಆಗಿದೆ.'),
+          () => 'kn-IN',
+        ),
+      ),
+    ).resolves.toBe('ವಿಳಾಸ 42, 5th Cross, Indiranagar ಆಗಿದೆ.');
+  });
+
+  it('rejects Hindi or Kannada output when English is selected', async () => {
+    const hindi = await collect(
+      enforceSelectedSpeechLanguage(chunked('यह पता है।'), () => 'en-IN'),
+    );
+    const kannada = await collect(
+      enforceSelectedSpeechLanguage(chunked('ಇದು ವಿಳಾಸ.'), () => 'en-IN'),
+    );
+
+    expect(hindi).toMatch(/^Sorry,/);
+    expect(kannada).toMatch(/^Sorry,/);
   });
 });

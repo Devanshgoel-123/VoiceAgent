@@ -42,8 +42,10 @@ describe('property availability prompts', () => {
     expect(instructions).toContain('Listed by: Ramesh Kumar');
     expect(instructions).toContain('Galynest published this listing for Ramesh Kumar');
     expect(instructions).toContain(
-      "Hi, this is Galynest. We'd listed your 2 BHK in Indiranagar for 25,000 rupees a month",
+      'Hi, this is Galynest. Is your 2 BHK in Indiranagar at 25,000 rupees a month still available?',
     );
+    expect(instructions).toContain('use natural everyday Hinglish');
+    expect(instructions).toContain('Prefer one short sentence');
     expect(instructions).toContain(
       'Never volunteer or read the full street address',
     );
@@ -51,6 +53,11 @@ describe('property availability prompts', () => {
       'Only provide the full address or another property detail when the owner specifically asks',
     );
     expect(instructions).toContain('- Address: 42 Indiranagar');
+    expect(instructions).toContain(
+      'English, Hindi, and Kannada are the ONLY supported languages',
+    );
+    expect(instructions).toContain('CURRENT RESPONSE LANGUAGE');
+    expect(instructions).toContain('Ignore that fragment');
     expect(instructions).not.toMatch(/Listed by: Galynest/);
   });
 });

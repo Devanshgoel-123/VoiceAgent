@@ -10,26 +10,25 @@ import {
 } from '../src/config/call-config.js';
 
 describe('availability closing messages', () => {
-  it('explains follow-up and number saving after a yes', () => {
+  it('keeps the yes closing short and explains the next step', () => {
     const text = availabilityClosing('yes', 'en-IN', {
       companyName: 'Galynest',
       companyWebsite: 'galynest.com',
     });
-    expect(text).toContain('continue searching for tenants');
-    expect(text).toContain('as soon as we find a tenant for you');
-    expect(text).toContain('saving this number as Galynest Property Team');
+    expect(text).toContain('call when we find a matching tenant');
+    expect(text.split(/\s+/).length).toBeLessThanOrEqual(15);
     expect(text).not.toContain('Galiynest');
     expect(text).not.toContain('Gullynest');
   });
 
-  it('explains record update and future website option after a no', () => {
+  it('keeps the no closing short and confirms no repeat call', () => {
     const text = availabilityClosing('no', 'en-IN', {
       companyName: 'Galynest',
       companyWebsite: 'galynest.com',
     });
-    expect(text).toContain('update our records');
-    expect(text).toContain('will not disturb you again');
-    expect(text).toContain('galynest dot com');
+    expect(text).toContain('update the listing');
+    expect(text).toContain("won't call again");
+    expect(text.split(/\s+/).length).toBeLessThanOrEqual(15);
   });
 
   it('uses the last spoken language for the closing', () => {
@@ -38,25 +37,25 @@ describe('availability closing messages', () => {
         companyName: 'Galynest',
         companyWebsite: 'galynest.com',
       }),
-    ).toContain('किरायेदार');
+    ).toContain('Tenant');
     expect(
       availabilityClosing('yes', 'kn-IN', {
         companyName: 'Galynest',
         companyWebsite: 'galynest.com',
       }),
-    ).toContain('ಬಾಡಿಗೆದಾರ');
+    ).toContain('Tenant');
     expect(
       availabilityClosing('no', 'hi-IN', {
         companyName: 'Galynest',
         companyWebsite: 'galynest.com',
       }),
-    ).toContain('रिकॉर्ड अपडेट');
+    ).toContain('listing update');
     expect(
       availabilityClosing('no', 'kn-IN', {
         companyName: 'Galynest',
         companyWebsite: 'galynest.com',
       }),
-    ).toContain('ದಾಖಲೆಗಳನ್ನು ನವೀಕರಿಸುತ್ತೇವೆ');
+    ).toContain('listing update');
   });
 
   it('interpolates custom branding without hardcoded variants', () => {
@@ -65,17 +64,14 @@ describe('availability closing messages', () => {
       companyWebsite: 'acme.homes',
     });
     expect(text).toContain('Acme Homes team');
-    expect(text).toContain('Acme Homes Property Team');
     expect(text).not.toContain('Galynest');
   });
 
   it('apologizes and promises no further contact about an ownership mismatch', () => {
-    expect(ownershipMismatchClosing('en-IN')).toContain(
-      "won't contact you again about this property",
-    );
-    expect(ownershipMismatchClosing('hi-IN')).toContain('रिकॉर्ड में गलती');
-    expect(ownershipMismatchClosing('hi-IN')).toContain('दोबारा परेशान नहीं करेंगे');
-    expect(ownershipMismatchClosing('kn-IN')).toContain('ತಪ್ಪಿರುವಂತೆ');
+    expect(ownershipMismatchClosing('en-IN')).toContain("won't call again");
+    expect(ownershipMismatchClosing('hi-IN')).toContain('records में गलती');
+    expect(ownershipMismatchClosing('hi-IN')).toContain('दोबारा call नहीं करेंगे');
+    expect(ownershipMismatchClosing('kn-IN')).toContain('ತಪ್ಪಿದೆ');
   });
 });
 
@@ -245,7 +241,7 @@ describe('scripted opening messages', () => {
     };
 
     expect(openingForLanguage(params, 'en-IN')).toBe(
-      "Hi, this is Galinest. We'd listed your 2 BHK in Indiranagar for 25,000 rupees a month — just confirming, is it still available?",
+      'Hi, this is Galinest. Is your 2 BHK in Indiranagar at 25,000 rupees a month still available?',
     );
     expect(openingForLanguage(params, 'en-IN')).not.toContain('42, Indiranagar');
     expect(openingForLanguage(params, 'en-IN')).not.toContain('Jitesh');

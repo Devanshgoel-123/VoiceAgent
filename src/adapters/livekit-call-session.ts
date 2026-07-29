@@ -15,7 +15,6 @@ import { fireAndForget } from '../core/process-safety.js';
 import {
   LanguageManager,
   type LanguageCode,
-  UnsupportedLanguageDebouncer,
 } from '../core/language-manager.js';
 import { isOwnershipMismatch } from '../core/owner-intent.js';
 import type { OwnerOutcome } from '../jobs/call-log-types.js';
@@ -28,7 +27,10 @@ import {
   type AvailabilityOutcome,
 } from './closing-messages.js';
 import { applySpokenLanguage } from './spoken-language.js';
-import { filterToolCallMarkup } from './tts-text-transforms.js';
+import {
+  enforceSelectedSpeechLanguage,
+  filterToolCallMarkup,
+} from './tts-text-transforms.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
 export type { AvailabilityOutcome };
@@ -79,7 +81,6 @@ export class LiveKitCallSession implements CallLifecycle {
   private readonly callRecord?: CallSessionRecord;
   private readonly onPersist?: (snapshot: CallLogSnapshot) => Promise<void>;
   private readonly languageManager = new LanguageManager('en-IN');
-  private readonly unsupportedLanguageDebouncer = new UnsupportedLanguageDebouncer();
 
   private session?: voice.AgentSession;
   private hangupScheduled = false;
@@ -124,6 +125,10 @@ export class LiveKitCallSession implements CallLifecycle {
       ttsTextTransforms: [
         'filter_markdown',
         filterToolCallMarkup,
+        (input) =>
+          enforceSelectedSpeechLanguage(input, () =>
+            this.languageManager.getCurrentLanguage(),
+          ),
         'filter_emoji',
       ],
       turnHandling: {
@@ -206,6 +211,7 @@ export class LiveKitCallSession implements CallLifecycle {
       language,
       this.pipeline.ttsProvider,
       this.pipeline.elevenLabsVoiceId,
+      this.pipeline.sarvamSpeaker,
     );
     this.appliedTtsLanguage = language;
     this.callRecord?.transcriptBuilder.addLanguage(language);
@@ -448,24 +454,7 @@ export class LiveKitCallSession implements CallLifecycle {
       const unsupportedLanguage = ev.isFinal
         ? LanguageManager.detectUnsupportedLanguage(ev.transcript, ev.language)
         : null;
-      const confirmedUnsupportedLanguage = ev.isFinal
-        ? this.unsupportedLanguageDebouncer.observe(unsupportedLanguage)
-        : null;
-      if (unsupportedLanguage && !confirmedUnsupportedLanguage) {
-        clearTurnCommitTimer();
-        session.clearUserTurn();
-        this.resetPendingLanguageSwitch();
-        callInfo(
-          `language: ignoring isolated unsupported hint=${unsupportedLanguage} heard="${truncateForLog(
-            ev.transcript,
-          )}"`,
-          this.logger,
-        );
-        this.armOwnerResponseTimeout();
-        return;
-      }
-      if (confirmedUnsupportedLanguage) {
-        this.unsupportedLanguageDebouncer.reset();
+      if (unsupportedLanguage) {
         clearTurnCommitTimer();
         session.clearUserTurn();
         this.resetPendingLanguageSwitch();
@@ -475,12 +464,12 @@ export class LiveKitCallSession implements CallLifecycle {
         this.ownerRespondedAfterOpening = false;
         this.setSpokenLanguage(
           'en-IN',
-          `unsupported_language=${confirmedUnsupportedLanguage}`,
+          `unsupported_language=${unsupportedLanguage}`,
         );
 
         const supportText =
-          'Sorry, I can currently speak English, Hindi, or Kannada. ' +
-          'Please tell me which language you prefer.';
+          'Sorry, I can only speak English, Hindi, or Kannada. ' +
+          'Is the property still available for rent?';
         this.callRecord?.transcriptBuilder.addAssistantText(
           supportText,
           'language_fallback',
@@ -659,7 +648,12 @@ export class LiveKitCallSession implements CallLifecycle {
     }
 
     await sleep(50);
-    session.shutdown({ drain: false, reason: 'availability confirmed' });
+    const shutdownReason = this.ownershipMismatch
+      ? 'ownership mismatch'
+      : this.availabilityOutcome
+        ? `availability confirmed: ${this.availabilityOutcome}`
+        : 'call completed: inconclusive';
+    session.shutdown({ drain: false, reason: shutdownReason });
     await this.finalizeHangup('after_shutdown');
 
     setTimeout(() => {

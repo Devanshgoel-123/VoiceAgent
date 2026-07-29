@@ -113,6 +113,25 @@ describe('API server', () => {
     expect(res.body.error).toBe('Invalid request body');
   });
 
+  it('rejects call languages other than English, Hindi, or Kannada', async () => {
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings());
+
+    const res = await request(app)
+      .post('/calls/property-availability')
+      .set('Authorization', 'Bearer test-secret')
+      .send({
+        owner_name: 'Ramesh',
+        phone_number: '+919876543210',
+        property_id: 'P1',
+        property_address: '42 Indiranagar',
+        preferred_language: 'ml-IN',
+      });
+
+    expect(res.status).toBe(400);
+    expect(mockSecureDispatch).not.toHaveBeenCalled();
+  });
+
   it('dispatches with a valid authenticated payload', async () => {
     const { createApp } = await import('../src/api/app.js');
     const app = createApp(testSettings());

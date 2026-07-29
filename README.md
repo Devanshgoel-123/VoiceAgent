@@ -408,6 +408,7 @@ Each call is tracked in `call_logs` with:
 | `LIVEKIT_API_KEY` | Yes | LiveKit API key |
 | `LIVEKIT_API_SECRET` | Yes | LiveKit API secret |
 | `SARVAM_API_KEY` | Yes | Sarvam AI API key |
+| `SARVAM_TTS_SPEAKER` | No | Single Sarvam speaker reused across English, Hindi, and Kannada (default: `aditya`) |
 | `TTS_PROVIDER` | No | `sarvam` (default) or `elevenlabs` |
 | `ELEVEN_API_KEY` | For ElevenLabs | ElevenLabs API key |
 | `ELEVENLABS_VOICE_ID` | No | Voice ID selected from ElevenLabs Voice Library |
