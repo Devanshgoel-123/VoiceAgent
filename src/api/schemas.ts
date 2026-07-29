@@ -14,7 +14,8 @@ export const propertyAvailabilityRequestSchema = z.object({
   bhk: z.string().trim().optional(),
   rent_amount: z.coerce.number().positive().optional(),
   city: z.string().trim().optional(),
-  preferred_language: z.string().trim().optional(),
+  locality: z.string().trim().optional(),
+  preferred_language: z.enum(['en-IN', 'hi-IN', 'kn-IN']).optional(),
   tts_provider: z.enum(['sarvam', 'elevenlabs']).optional(),
   caller_name: z.string().trim().optional(),
 });

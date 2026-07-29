@@ -4,12 +4,15 @@ import { DEFAULT_DISPATCH_COOLDOWN_MS } from './call-config.js';
 export type TtsProvider = 'sarvam' | 'elevenlabs';
 export type ElevenLabsTransport = 'http' | 'websocket';
 export type AppEnv = 'developer' | 'production';
+export type SupportedLanguage = 'en-IN' | 'hi-IN' | 'kn-IN';
 
 export interface Settings {
   livekitUrl: string;
   livekitApiKey: string;
   livekitApiSecret: string;
   sarvamApiKey: string;
+  /** One Sarvam voice identity reused across every supported language. */
+  sarvamTtsSpeaker?: string;
   ttsProvider: TtsProvider;
   elevenLabsApiKey?: string;
   elevenLabsVoiceId?: string;
@@ -27,7 +30,7 @@ export interface Settings {
   callerName: string;
   databaseUrl?: string;
   llmModel: string;
-  defaultLanguage: string;
+  defaultLanguage: SupportedLanguage;
   telephonySampleRate: number;
   dispatchCooldownMs: number;
   callingHoursStartHour: number;
@@ -68,9 +71,9 @@ function parseElevenLabsTransport(
 }
 
 function parseTtsVolume(raw: string | undefined): number {
-  const parsed = Number(raw ?? '0.65');
-  if (!Number.isFinite(parsed)) return 0.65;
-  return Math.min(1, Math.max(0.1, parsed));
+  const parsed = Number(raw ?? '1.15');
+  if (!Number.isFinite(parsed)) return 1.15;
+  return Math.min(2, Math.max(0.1, parsed));
 }
 
 function parseTtsSpeed(raw: string | undefined): number {
@@ -81,6 +84,14 @@ function parseTtsSpeed(raw: string | undefined): number {
 
 function parseAppEnv(raw: string | undefined): AppEnv {
   return raw?.trim().toLowerCase() === 'production' ? 'production' : 'developer';
+}
+
+function parseSupportedLanguage(raw: string | undefined): SupportedLanguage {
+  const value = raw?.trim() || 'en-IN';
+  if (value === 'en-IN' || value === 'hi-IN' || value === 'kn-IN') return value;
+  throw new Error(
+    `DEFAULT_LANGUAGE must be en-IN, hi-IN, or kn-IN; received ${JSON.stringify(value)}`,
+  );
 }
 
 function parseBoolean(raw: string | undefined): boolean | undefined {
@@ -117,6 +128,7 @@ export function getSettings(): Settings {
     livekitApiKey: required('LIVEKIT_API_KEY'),
     livekitApiSecret: required('LIVEKIT_API_SECRET'),
     sarvamApiKey: required('SARVAM_API_KEY'),
+    sarvamTtsSpeaker: process.env.SARVAM_TTS_SPEAKER?.trim() || 'aditya',
     ttsProvider: parseTtsProvider(process.env.TTS_PROVIDER),
     elevenLabsApiKey: process.env.ELEVEN_API_KEY,
     elevenLabsVoiceId: optionalRealValue(process.env.ELEVENLABS_VOICE_ID),
@@ -136,7 +148,7 @@ export function getSettings(): Settings {
     callerName: process.env.CALLER_NAME?.trim() || 'Aditi',
     databaseUrl: process.env.DATABASE_URL?.trim() || undefined,
     llmModel: process.env.LLM_MODEL ?? 'sarvam-105b',
-    defaultLanguage: process.env.DEFAULT_LANGUAGE ?? 'en-IN',
+    defaultLanguage: parseSupportedLanguage(process.env.DEFAULT_LANGUAGE),
     telephonySampleRate: parsePositiveInt(process.env.TELEPHONY_SAMPLE_RATE, 8000),
     dispatchCooldownMs: parsePositiveInt(
       process.env.DISPATCH_COOLDOWN_MS,

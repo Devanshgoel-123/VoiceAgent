@@ -18,6 +18,7 @@ export interface PropertyDetails {
   bhk?: string;
   rentAmount?: number;
   city?: string;
+  locality?: string;
 }
 
 export interface OwnerDetails {
@@ -85,6 +86,7 @@ export function toDispatchMetadata(job: PropertyAvailabilityCallJob): Record<str
     bhk: job.property.bhk,
     rent_amount: job.property.rentAmount,
     city: job.property.city,
+    property_locality: job.property.locality,
     company_name: job.companyName,
     company_website: getSettings().companyWebsite,
     caller_name: job.callerName,

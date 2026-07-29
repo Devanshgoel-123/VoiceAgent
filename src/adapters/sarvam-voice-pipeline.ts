@@ -13,6 +13,7 @@ import type {
   VoicePipelineProvider,
 } from './voice-pipeline.js';
 
+
 /**
  * Sarvam STT + LLM, with TTS from either Sarvam or ElevenLabs.
  * STT = ears, LLM = brain, TTS = mouth.
@@ -30,6 +31,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     const langMgr = new LanguageManager(language);
     const telephony = options.telephony ?? false;
     const ttsProvider = options.ttsProvider ?? this.settings.ttsProvider;
+    const sarvamSpeaker = this.settings.sarvamTtsSpeaker ?? 'aditya';
 
     return {
       stt: this.createStt('unknown'),
@@ -39,10 +41,11 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
           ? this.createElevenLabsTts(langMgr.getCurrentLanguage())
           : this.createSarvamTts({
               language: langMgr.getCurrentLanguage(),
-              speaker: langMgr.getTtsSpeaker(),
+              speaker: sarvamSpeaker,
               telephony,
             }),
       ttsProvider,
+      sarvamSpeaker,
       elevenLabsVoiceId: this.settings.elevenLabsVoiceId,
     };
   }
@@ -104,19 +107,20 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     }
 
     const speed = Math.min(1.2, Math.max(0.8, this.settings.ttsSpeed));
+    const model = this.settings.elevenLabsModel;
 
     const elevenLabsTts = withTtsVolumeGain(
       new elevenlabs.TTS({
         apiKey: this.settings.elevenLabsApiKey,
-        model: this.settings.elevenLabsModel,
+        model,
         voiceId: this.settings.elevenLabsVoiceId,
         language,
         encoding: 'pcm_16000',
         autoMode: true,
         voiceSettings: {
-          stability: 0.5,
+          stability: 0.7,
           similarity_boost: 0.75,
-          style: 0.1,
+          style: 0,
           speed,
           // Speaker boost makes TTS much louder on PSTN — keep off for calls.
           use_speaker_boost: false,
@@ -127,7 +131,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
 
     if (
       this.settings.elevenLabsTransport === 'websocket' &&
-      this.settings.elevenLabsModel !== 'eleven_v3'
+      model !== 'eleven_v3'
     ) {
       return elevenLabsTts;
     }

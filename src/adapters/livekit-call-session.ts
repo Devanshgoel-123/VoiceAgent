@@ -15,7 +15,6 @@ import { fireAndForget } from '../core/process-safety.js';
 import {
   LanguageManager,
   type LanguageCode,
-  UnsupportedLanguageDebouncer,
 } from '../core/language-manager.js';
 import { isOwnershipMismatch } from '../core/owner-intent.js';
 import type { OwnerOutcome } from '../jobs/call-log-types.js';
@@ -28,6 +27,11 @@ import {
   type AvailabilityOutcome,
 } from './closing-messages.js';
 import { applySpokenLanguage } from './spoken-language.js';
+import {
+  enforceSelectedSpeechLanguage,
+  filterToolCallMarkup,
+  normalizeSpeechText,
+} from './tts-text-transforms.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
 export type { AvailabilityOutcome };
@@ -45,6 +49,9 @@ export interface CallLifecycle {
   setSpokenLanguage(language: LanguageCode, reason?: string): void;
   getCurrentLanguage(): LanguageCode;
   getLastOwnerTranscript(): string | undefined;
+  /** Full assembled owner turn committed to the LLM context. */
+  setCommittedOwnerTranscript?(transcript: string): void;
+  getCommittedOwnerTurnSequence?(): number;
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void;
   /** Owner explicitly asked not to be called again. */
   recordDoNotCall(reason: string): void;
@@ -68,6 +75,28 @@ export interface LiveKitCallSessionOptions {
   onPersist?: (snapshot: CallLogSnapshot) => Promise<void>;
 }
 
+/** Debounces final STT fragments while allowing continued speech to cancel. */
+export class OwnerTurnCommitScheduler {
+  private timer?: ReturnType<typeof setTimeout>;
+
+  constructor(private readonly delayMs: number) {}
+
+  schedule(commit: () => void): void {
+    this.cancel();
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      commit();
+    }, this.delayMs);
+  }
+
+  cancel(): boolean {
+    if (!this.timer) return false;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    return true;
+  }
+}
+
 /** One outbound call: AgentSession lifecycle, language, greeting, hangup, persist. */
 export class LiveKitCallSession implements CallLifecycle {
   private readonly ctx: JobContext;
@@ -78,7 +107,6 @@ export class LiveKitCallSession implements CallLifecycle {
   private readonly callRecord?: CallSessionRecord;
   private readonly onPersist?: (snapshot: CallLogSnapshot) => Promise<void>;
   private readonly languageManager = new LanguageManager('en-IN');
-  private readonly unsupportedLanguageDebouncer = new UnsupportedLanguageDebouncer();
 
   private session?: voice.AgentSession;
   private hangupScheduled = false;
@@ -101,6 +129,10 @@ export class LiveKitCallSession implements CallLifecycle {
   private sessionErrorCount = 0;
   private ownerRespondedAfterOpening = false;
   private lastFinalOwnerTranscript?: string;
+  private lastCommittedOwnerTranscript?: string;
+  private committedOwnerTurnSequence = 0;
+  private pendingLanguageSwitch: LanguageCode | null = null;
+  private pendingLanguageSwitchCount = 0;
 
   constructor(options: LiveKitCallSessionOptions) {
     this.ctx = options.jobContext;
@@ -118,6 +150,16 @@ export class LiveKitCallSession implements CallLifecycle {
       llm: this.pipeline.llm as never,
       tts: this.pipeline.tts as never,
       vad: null,
+      ttsTextTransforms: [
+        'filter_markdown',
+        filterToolCallMarkup,
+        normalizeSpeechText,
+        (input) =>
+          enforceSelectedSpeechLanguage(input, () =>
+            this.languageManager.getCurrentLanguage(),
+          ),
+        'filter_emoji',
+      ],
       turnHandling: {
         turnDetection: 'stt',
         endpointing: {
@@ -198,6 +240,7 @@ export class LiveKitCallSession implements CallLifecycle {
       language,
       this.pipeline.ttsProvider,
       this.pipeline.elevenLabsVoiceId,
+      this.pipeline.sarvamSpeaker,
     );
     this.appliedTtsLanguage = language;
     this.callRecord?.transcriptBuilder.addLanguage(language);
@@ -214,7 +257,44 @@ export class LiveKitCallSession implements CallLifecycle {
   }
 
   getLastOwnerTranscript(): string | undefined {
-    return this.lastFinalOwnerTranscript;
+    return this.lastCommittedOwnerTranscript ?? this.lastFinalOwnerTranscript;
+  }
+
+  setCommittedOwnerTranscript(transcript: string): void {
+    const normalized = transcript.trim();
+    if (!normalized) return;
+    this.lastCommittedOwnerTranscript = normalized;
+    this.committedOwnerTurnSequence += 1;
+  }
+
+  getCommittedOwnerTurnSequence(): number {
+    return this.committedOwnerTurnSequence;
+  }
+
+  private shouldApplyLanguageSwitch(
+    language: LanguageCode,
+    transcript: string,
+  ): boolean {
+    if (LanguageManager.hasStrongLanguageSwitchEvidence(transcript)) {
+      this.resetPendingLanguageSwitch();
+      return true;
+    }
+
+    if (this.pendingLanguageSwitch === language) {
+      this.pendingLanguageSwitchCount += 1;
+    } else {
+      this.pendingLanguageSwitch = language;
+      this.pendingLanguageSwitchCount = 1;
+    }
+
+    if (this.pendingLanguageSwitchCount < 2) return false;
+    this.resetPendingLanguageSwitch();
+    return true;
+  }
+
+  private resetPendingLanguageSwitch(): void {
+    this.pendingLanguageSwitch = null;
+    this.pendingLanguageSwitchCount = 0;
   }
 
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void {
@@ -348,22 +428,29 @@ export class LiveKitCallSession implements CallLifecycle {
 
   private attachSessionEvents(session: voice.AgentSession): void {
     let agentState: voice.AgentState = 'initializing';
-    let turnCommitTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const clearTurnCommitTimer = () => {
-      if (turnCommitTimer) {
-        clearTimeout(turnCommitTimer);
-        turnCommitTimer = undefined;
-      }
-    };
+    const turnCommitScheduler = new OwnerTurnCommitScheduler(
+      TURN_COMMIT_FALLBACK_MS,
+    );
 
     session.on(voice.AgentSessionEventTypes.AgentStateChanged, (ev) => {
       agentState = ev.newState;
       callInfo(`agent: ${ev.oldState} → ${ev.newState}`, this.logger);
       if (ev.newState === 'thinking' || ev.newState === 'speaking') {
-        clearTurnCommitTimer();
+        turnCommitScheduler.cancel();
         // Agent activity must not cancel the timer waiting for the owner.
         this.clearOpeningTimer();
+      }
+    });
+
+    session.on(voice.AgentSessionEventTypes.UserStateChanged, (ev) => {
+      if (ev.newState === 'speaking') {
+        // A new speech segment means the previous final transcript was only a
+        // pause, not the end of the owner's complete thought.
+        turnCommitScheduler.cancel();
+        this.lastCommittedOwnerTranscript = undefined;
+        this.ownerRespondedAfterOpening = false;
+        this.armOwnerResponseTimeout();
+        callDebug('turn commit: cancelled because owner resumed speaking', this.logger);
       }
     });
 
@@ -414,35 +501,22 @@ export class LiveKitCallSession implements CallLifecycle {
       const unsupportedLanguage = ev.isFinal
         ? LanguageManager.detectUnsupportedLanguage(ev.transcript, ev.language)
         : null;
-      const confirmedUnsupportedLanguage = ev.isFinal
-        ? this.unsupportedLanguageDebouncer.observe(unsupportedLanguage)
-        : null;
-      if (unsupportedLanguage && !confirmedUnsupportedLanguage) {
-        clearTurnCommitTimer();
-        callInfo(
-          `language: ignoring isolated unsupported hint=${unsupportedLanguage} heard="${truncateForLog(
-            ev.transcript,
-          )}"`,
-          this.logger,
-        );
-        this.armOwnerResponseTimeout();
-        return;
-      }
-      if (confirmedUnsupportedLanguage) {
-        this.unsupportedLanguageDebouncer.reset();
-        clearTurnCommitTimer();
+      if (unsupportedLanguage) {
+        turnCommitScheduler.cancel();
+        session.clearUserTurn();
+        this.resetPendingLanguageSwitch();
         this.clearOpeningGreeting();
         this.openingGreeted = true;
         // We handled this turn and are now waiting for a supported-language reply.
         this.ownerRespondedAfterOpening = false;
         this.setSpokenLanguage(
           'en-IN',
-          `unsupported_language=${confirmedUnsupportedLanguage}`,
+          `unsupported_language=${unsupportedLanguage}`,
         );
 
         const supportText =
-          'Sorry, I can currently speak English, Hindi, or Kannada. ' +
-          'Please tell me which language you prefer.';
+          'Sorry, I can only speak English, Hindi, or Kannada. ' +
+          'Is the property still available for rent?';
         this.callRecord?.transcriptBuilder.addAssistantText(
           supportText,
           'language_fallback',
@@ -463,14 +537,25 @@ export class LiveKitCallSession implements CallLifecycle {
         const sttHint = ev.language ?? 'null';
         const heard = truncateForLog(ev.transcript);
 
-        if (resolved && resolved !== current) {
+        if (
+          resolved &&
+          resolved !== current &&
+          this.shouldApplyLanguageSwitch(resolved, ev.transcript)
+        ) {
           this.setSpokenLanguage(resolved, `stt heard="${heard}" sttHint=${sttHint}`);
+        } else if (resolved && resolved !== current) {
+          callInfo(
+            `language: keep ${current} (waiting for confirmation of ${resolved}, heard="${heard}" sttHint=${sttHint})`,
+            this.logger,
+          );
         } else if (resolved && resolved === current) {
+          this.resetPendingLanguageSwitch();
           callInfo(
             `language: keep ${current} (confirmed, heard="${heard}" sttHint=${sttHint})`,
             this.logger,
           );
         } else {
+          this.resetPendingLanguageSwitch();
           callInfo(
             `language: keep ${current} (no switch, heard="${heard}" sttHint=${sttHint})`,
             this.logger,
@@ -517,9 +602,7 @@ export class LiveKitCallSession implements CallLifecycle {
       }
 
       // Unclear / other speech → minimum LLM brain.
-      clearTurnCommitTimer();
-      turnCommitTimer = setTimeout(() => {
-        turnCommitTimer = undefined;
+      turnCommitScheduler.schedule(() => {
         if (
           !this.hangupScheduled &&
           !this.hangupStarted &&
@@ -528,7 +611,7 @@ export class LiveKitCallSession implements CallLifecycle {
         ) {
           session.commitUserTurn();
         }
-      }, TURN_COMMIT_FALLBACK_MS);
+      });
     });
   }
 
@@ -610,7 +693,12 @@ export class LiveKitCallSession implements CallLifecycle {
     }
 
     await sleep(50);
-    session.shutdown({ drain: false, reason: 'availability confirmed' });
+    const shutdownReason = this.ownershipMismatch
+      ? 'ownership mismatch'
+      : this.availabilityOutcome
+        ? `availability confirmed: ${this.availabilityOutcome}`
+        : 'call completed: inconclusive';
+    session.shutdown({ drain: false, reason: shutdownReason });
     await this.finalizeHangup('after_shutdown');
 
     setTimeout(() => {

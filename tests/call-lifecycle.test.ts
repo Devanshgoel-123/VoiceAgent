@@ -2,30 +2,34 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   availabilityClosing,
   HANGUP_DEFER_MS,
+  OwnerTurnCommitScheduler,
   ownershipMismatchClosing,
 } from '../src/adapters/livekit-call-session.js';
+import {
+  OUTBOUND_ENDPOINTING_MIN_MS,
+  TURN_COMMIT_FALLBACK_MS,
+} from '../src/config/call-config.js';
 
 describe('availability closing messages', () => {
-  it('explains follow-up and number saving after a yes', () => {
+  it('keeps the yes closing short and explains the next step', () => {
     const text = availabilityClosing('yes', 'en-IN', {
       companyName: 'Galynest',
       companyWebsite: 'galynest.com',
     });
-    expect(text).toContain('continue searching for tenants');
-    expect(text).toContain('as soon as we find a tenant for you');
-    expect(text).toContain('saving this number as Galynest Property Team');
+    expect(text).toContain('call when we find a matching tenant');
+    expect(text.split(/\s+/).length).toBeLessThanOrEqual(15);
     expect(text).not.toContain('Galiynest');
     expect(text).not.toContain('Gullynest');
   });
 
-  it('explains record update and future website option after a no', () => {
+  it('keeps the no closing short and confirms no repeat call', () => {
     const text = availabilityClosing('no', 'en-IN', {
       companyName: 'Galynest',
       companyWebsite: 'galynest.com',
     });
-    expect(text).toContain('update our records');
-    expect(text).toContain('will not disturb you again');
-    expect(text).toContain('galynest dot com');
+    expect(text).toContain('update the listing');
+    expect(text).toContain("won't call again");
+    expect(text.split(/\s+/).length).toBeLessThanOrEqual(15);
   });
 
   it('uses the last spoken language for the closing', () => {
@@ -34,25 +38,25 @@ describe('availability closing messages', () => {
         companyName: 'Galynest',
         companyWebsite: 'galynest.com',
       }),
-    ).toContain('किरायेदार');
+    ).toContain('Tenant');
     expect(
       availabilityClosing('yes', 'kn-IN', {
         companyName: 'Galynest',
         companyWebsite: 'galynest.com',
       }),
-    ).toContain('ಬಾಡಿಗೆದಾರ');
+    ).toContain('Tenant');
     expect(
       availabilityClosing('no', 'hi-IN', {
         companyName: 'Galynest',
         companyWebsite: 'galynest.com',
       }),
-    ).toContain('रिकॉर्ड अपडेट');
+    ).toContain('listing update');
     expect(
       availabilityClosing('no', 'kn-IN', {
         companyName: 'Galynest',
         companyWebsite: 'galynest.com',
       }),
-    ).toContain('ದಾಖಲೆಗಳನ್ನು ನವೀಕರಿಸುತ್ತೇವೆ');
+    ).toContain('listing update');
   });
 
   it('interpolates custom branding without hardcoded variants', () => {
@@ -61,17 +65,14 @@ describe('availability closing messages', () => {
       companyWebsite: 'acme.homes',
     });
     expect(text).toContain('Acme Homes team');
-    expect(text).toContain('Acme Homes Property Team');
     expect(text).not.toContain('Galynest');
   });
 
   it('apologizes and promises no further contact about an ownership mismatch', () => {
-    expect(ownershipMismatchClosing('en-IN')).toContain(
-      "won't contact you again about this property",
-    );
-    expect(ownershipMismatchClosing('hi-IN')).toContain('रिकॉर्ड में गलती');
-    expect(ownershipMismatchClosing('hi-IN')).toContain('दोबारा परेशान नहीं करेंगे');
-    expect(ownershipMismatchClosing('kn-IN')).toContain('ತಪ್ಪಿರುವಂತೆ');
+    expect(ownershipMismatchClosing('en-IN')).toContain("won't call again");
+    expect(ownershipMismatchClosing('hi-IN')).toContain('records में गलती');
+    expect(ownershipMismatchClosing('hi-IN')).toContain('दोबारा call नहीं करेंगे');
+    expect(ownershipMismatchClosing('kn-IN')).toContain('ತಪ್ಪಿದೆ');
   });
 });
 
@@ -133,6 +134,11 @@ class FakeCallLifecycle {
 }
 
 describe('Call lifecycle hangup contract', () => {
+  it('waits for delayed Sarvam final transcripts before committing a turn', () => {
+    expect(OUTBOUND_ENDPOINTING_MIN_MS).toBeGreaterThanOrEqual(1500);
+    expect(TURN_COMMIT_FALLBACK_MS).toBeGreaterThanOrEqual(1500);
+  });
+
   it('runs goodbye then hangup after deferred schedule (no speech-handle wait)', async () => {
     const lifecycle = new FakeCallLifecycle();
     lifecycle.deferMs = 20;
@@ -187,7 +193,32 @@ describe('Call lifecycle hangup contract', () => {
   });
 });
 
+describe('owner turn commit scheduler', () => {
+  it('cancels on resumed speech, then commits the complete turn after silence', () => {
+    vi.useFakeTimers();
+    try {
+      const committed: string[] = [];
+      const scheduler = new OwnerTurnCommitScheduler(1500);
+
+      scheduler.schedule(() => committed.push('partial'));
+      vi.advanceTimersByTime(1000);
+      expect(scheduler.cancel()).toBe(true);
+      vi.advanceTimersByTime(1000);
+      expect(committed).toEqual([]);
+
+      scheduler.schedule(() => committed.push('full turn'));
+      vi.advanceTimersByTime(1499);
+      expect(committed).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(committed).toEqual(['full turn']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('SarvamVoicePipeline', () => {
+
   it('creates a bundle with stt/llm/tts', async () => {
     vi.resetModules();
 
@@ -229,13 +260,20 @@ describe('scripted opening messages', () => {
       companyWebsite: 'galinest.com',
       callerName: 'Jitesh',
       propertyAddress: '42, Indiranagar',
+      bhk: '2 BHK',
+      locality: 'Indiranagar',
+      rentAmount: 25000,
     };
 
-    expect(openingForLanguage(params, 'en-IN')).toContain('Jitesh');
-    expect(openingForLanguage(params, 'en-IN')).toContain('Galinest');
-    expect(openingForLanguage(params, 'en-IN')).toContain('available for rent');
+    expect(openingForLanguage(params, 'en-IN')).toBe(
+      'Hi, this is Galinest. Is your 2 BHK in Indiranagar at 25,000 rupees a month still available?',
+    );
+    expect(openingForLanguage(params, 'en-IN')).not.toContain('42, Indiranagar');
+    expect(openingForLanguage(params, 'en-IN')).not.toContain('Jitesh');
     expect(openingForLanguage(params, 'en-IN')).not.toContain('Devansh');
-    expect(openingForLanguage(params, 'hi-IN')).toContain('किराये');
-    expect(openingForLanguage(params, 'kn-IN')).toContain('ಬಾಡಿಗೆ');
+    expect(openingForLanguage(params, 'hi-IN')).toContain('Indiranagar');
+    expect(openingForLanguage(params, 'hi-IN')).not.toContain('42, Indiranagar');
+    expect(openingForLanguage(params, 'kn-IN')).toContain('Indiranagar');
+    expect(openingForLanguage(params, 'kn-IN')).not.toContain('42, Indiranagar');
   });
 });

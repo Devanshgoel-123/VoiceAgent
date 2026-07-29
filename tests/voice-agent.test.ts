@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   LanguageManager,
-  UnsupportedLanguageDebouncer,
+  stripUnsupportedLanguageFragments,
 } from '../src/core/language-manager.js';
 import { createPropertyAvailabilityJob, toDispatchMetadata } from '../src/jobs/models.js';
 import { applySpokenLanguage } from '../src/adapters/spoken-language.js';
@@ -90,7 +90,7 @@ describe('LanguageManager', () => {
     ).toBe('en-IN');
   });
 
-  it('recognizes Gujarati as unsupported instead of passing it to TTS', () => {
+  it('recognizes every non-English/Hindi/Kannada script as unsupported', () => {
     expect(
       LanguageManager.detectUnsupportedLanguage(
         'તમે કોણ બોલો છો મારા નામ?',
@@ -105,7 +105,31 @@ describe('LanguageManager', () => {
     ).toBe('mr-in');
     expect(
       LanguageManager.detectUnsupportedLanguage('ആ അതെ അതെ.', 'ml-IN'),
-    ).toBe('ml-in');
+    ).toBe('ml-IN');
+    expect(
+      LanguageManager.detectUnsupportedLanguage('ஆமாம், கிடைக்கிறது', 'en-IN'),
+    ).toBe('ta-IN');
+    expect(
+      LanguageManager.detectUnsupportedLanguage('అవును, అందుబాటులో ఉంది', 'en-IN'),
+    ).toBe('te-IN');
+    expect(
+      LanguageManager.detectUnsupportedLanguage('ਹਾਂ, ਉਪਲਬਧ ਹੈ', 'pa-IN'),
+    ).toBe('pa-IN');
+  });
+
+  it('removes unsupported STT filler from a supported-language turn', () => {
+    expect(
+      stripUnsupportedLanguageFragments(
+        'ആ. Which place is it? Can you tell me the full address?',
+      ),
+    ).toBe('Which place is it? Can you tell me the full address?');
+    expect(stripUnsupportedLanguageFragments('ആ അതെ അതെ.')).toBe('');
+    expect(stripUnsupportedLanguageFragments('हाँ, उपलब्ध है')).toBe(
+      'हाँ, उपलब्ध है',
+    );
+    expect(stripUnsupportedLanguageFragments('ಹೌದು, ಲಭ್ಯವಿದೆ')).toBe(
+      'ಹೌದು, ಲಭ್ಯವಿದೆ',
+    );
   });
 
   it.each([
@@ -123,6 +147,7 @@ describe('LanguageManager', () => {
     expect(LanguageManager.isShortYesNo('ji')).toBe(false);
     expect(LanguageManager.isShortYesNo('okay')).toBe(false);
     expect(LanguageManager.isShortYesNo('ha ji')).toBe(false);
+    expect(new LanguageManager('hi-IN').detectFromText('जी').isAffirmative).toBeNull();
     expect(LanguageManager.isShortYesNo('haan')).toBe(true);
     expect(LanguageManager.isShortYesNo('no')).toBe(true);
   });
@@ -130,21 +155,10 @@ describe('LanguageManager', () => {
   it('fast-paths punctuated Indic yes/no without splitting combining marks', () => {
     expect(LanguageManager.isShortYesNo('नहीं।')).toBe(true);
     expect(LanguageManager.isShortYesNo('हाँ।')).toBe(true);
-    expect(LanguageManager.isShortYesNo('ਨਹੀਂ।')).toBe(true);
-    expect(
-      new LanguageManager('hi-IN').detectFromText('ਨਹੀਂ।').isNegative,
-    ).toBe(true);
+    expect(LanguageManager.isShortYesNo('ਨਹੀਂ।')).toBe(false);
     expect(
       LanguageManager.detectUnsupportedLanguage('ਨਹੀਂ।', 'pa-IN'),
-    ).toBeNull();
-  });
-
-  it('requires two consecutive unsupported-language turns', () => {
-    const debouncer = new UnsupportedLanguageDebouncer();
-    expect(debouncer.observe('mr-in')).toBeNull();
-    expect(debouncer.observe(null)).toBeNull();
-    expect(debouncer.observe('mr-in')).toBeNull();
-    expect(debouncer.observe('mr-in')).toBe('mr-in');
+    ).toBe('pa-IN');
   });
 
   it('does not flap to Kannada from STT alone on English speech', () => {
@@ -154,9 +168,19 @@ describe('LanguageManager', () => {
     ).toBe('en-IN');
   });
 
-  it('maps TTS speakers', () => {
-    expect(manager.getTtsSpeaker('hi-IN')).toBe('anand');
-    expect(manager.getTtsSpeaker('kn-IN')).toBe('priya');
+  it('requires strong evidence before immediately switching languages', () => {
+    expect(LanguageManager.hasStrongLanguageSwitchEvidence('ಅಷ್ಟು.')).toBe(false);
+    expect(
+      LanguageManager.hasStrongLanguageSwitchEvidence(
+        'What is the address of this property?',
+      ),
+    ).toBe(true);
+    expect(LanguageManager.hasStrongLanguageSwitchEvidence('ಕನ್ನಡ')).toBe(true);
+  });
+
+  it('keeps one default Sarvam speaker across languages', () => {
+    expect(manager.getTtsSpeaker('hi-IN')).toBe('aditya');
+    expect(manager.getTtsSpeaker('kn-IN')).toBe('aditya');
     expect(manager.getTtsSpeaker('en-IN')).toBe('aditya');
   });
 });
@@ -171,11 +195,30 @@ describe('TTS provider language updates', () => {
     };
 
     applySpokenLanguage(tts, 'hi-IN', 'elevenlabs', 'voice-abc');
-    applySpokenLanguage(tts, 'kn-IN', 'sarvam');
+    applySpokenLanguage(tts, 'kn-IN', 'sarvam', undefined, 'voice-fixed');
 
     expect(updates).toEqual([
       { language: 'hi-IN', voiceId: 'voice-abc' },
-      { targetLanguageCode: 'kn-IN', speaker: 'priya' },
+      { targetLanguageCode: 'kn-IN', speaker: 'voice-fixed' },
+    ]);
+  });
+
+  it('preserves the same Sarvam speaker through every language switch', () => {
+    const updates: Record<string, unknown>[] = [];
+    const tts = {
+      updateOptions(options: Record<string, unknown>) {
+        updates.push(options);
+      },
+    };
+
+    for (const language of ['en-IN', 'hi-IN', 'kn-IN'] as const) {
+      applySpokenLanguage(tts, language, 'sarvam', undefined, 'aditya');
+    }
+
+    expect(updates).toEqual([
+      { targetLanguageCode: 'en-IN', speaker: 'aditya' },
+      { targetLanguageCode: 'hi-IN', speaker: 'aditya' },
+      { targetLanguageCode: 'kn-IN', speaker: 'aditya' },
     ]);
   });
 });
@@ -192,6 +235,21 @@ describe('TTS volume gain', () => {
     };
     applyTtsVolumeGain(frame as never, 0.5);
     expect([...data]).toEqual([5000, -5000, 10000]);
+  });
+
+  it('boosts quiet PCM samples and clips safely at Int16 limits', async () => {
+    const { applyTtsVolumeGain } = await import('../src/adapters/tts-volume.js');
+    const data = new Int16Array([10000, -10000, 30000, -30000]);
+    const frame = {
+      data,
+      sampleRate: 16000,
+      channels: 1,
+      samplesPerChannel: 4,
+    };
+
+    applyTtsVolumeGain(frame as never, 1.5);
+
+    expect([...data]).toEqual([15000, -15000, 32767, -32768]);
   });
 });
 

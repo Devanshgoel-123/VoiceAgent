@@ -13,20 +13,19 @@ const STRONG_AFFIRMATIVE: Record<string, Set<string>> = {
     'haan',
     'han',
     'ha',
-    'ji',
     'bilkul',
     'haa',
+    'बिल्कुल',
+    'बिलकुल',
     'हाँ',
     'हां',
-    'जी',
-    'ਹਾਂ',
   ]),
   'kn-IN': new Set(['haudu', 'houdu', 'howdu', 'ಹೌದು', 'ಹೌದ್ರಿ', 'ಸರಿ']),
 };
 
 const STRONG_NEGATIVE: Record<string, Set<string>> = {
   'en-IN': new Set(['no', 'nope', 'nah', 'negative']),
-  'hi-IN': new Set(['nahi', 'nahin', 'na', 'mat', 'nhi', 'नहीं', 'ना', 'ਨਹੀਂ']),
+  'hi-IN': new Set(['nahi', 'nahin', 'na', 'mat', 'nhi', 'नहीं', 'ना']),
   'kn-IN': new Set(['illa', 'alla', 'beda', 'ಇಲ್ಲ', 'ಬೇಡ']),
 };
 
@@ -43,72 +42,110 @@ const WEAK_NEGATIVE: Record<string, Set<string>> = {
 };
 
 /** Unambiguous standalone availability answers safe enough to bypass the LLM. */
-const FAST_PATH_YES_NO = new Set([
+const FAST_PATH_YES = new Set([
   'yes',
-  'no',
   'haan',
   'han',
   'haa',
   'हाँ',
   'हां',
-  'nahi',
-  'nahin',
-  'nhi',
-  'नहीं',
-  'ਹਾਂ',
-  'ਨਹੀਂ',
   'haudu',
   'houdu',
   'howdu',
   'ಹೌದು',
+  'available',
+  'बिल्कुल',
+  'बिलकुल',
+  'ಹೌದ್ರಿ',
+]);
+
+const FAST_PATH_NO = new Set([
+  'no',
+  'nahi',
+  'nahin',
+  'nhi',
+  'नहीं',
   'illa',
   'ಇಲ್ಲ',
-  'available',
   'unavailable',
+]);
+
+/** Politeness/copula words allowed around an otherwise unambiguous short yes/no. */
+const SHORT_YES_NO_FILLERS = new Set([
+  'ji',
+  'जी',
+  'hai',
+  'he',
+  'है',
+  'it',
+  'is',
+  'ಇದೆ',
 ]);
 
 const DEVANAGARI_RE = /[\u0900-\u097F]/g;
 const KANNADA_RE = /[\u0C80-\u0CFF]/g;
-const GUJARATI_RE = /[\u0A80-\u0AFF]/;
 const LATIN_RE = /[a-zA-Z]/g;
 const WORD_TOKEN_RE = /[\p{L}\p{M}]+/gu;
 
+const UNSUPPORTED_SCRIPT_CODES: Array<[RegExp, string]> = [
+  [/\p{Script=Malayalam}/u, 'ml-IN'],
+  [/\p{Script=Tamil}/u, 'ta-IN'],
+  [/\p{Script=Telugu}/u, 'te-IN'],
+  [/\p{Script=Gujarati}/u, 'gu-IN'],
+  [/\p{Script=Gurmukhi}/u, 'pa-IN'],
+  [/\p{Script=Bengali}/u, 'bn-IN'],
+  [/\p{Script=Oriya}/u, 'or-IN'],
+  [/\p{Script=Arabic}/u, 'unsupported'],
+  [/\p{Script=Sinhala}/u, 'unsupported'],
+];
+
+function isAllowedLanguageCharacter(character: string): boolean {
+  if (!/[\p{L}\p{M}]/u.test(character)) return true;
+  return /[\p{Script=Latin}\p{Script=Devanagari}\p{Script=Kannada}]/u.test(
+    character,
+  );
+}
+
 const TTS_SPEAKERS: Record<string, string> = {
   'en-IN': 'aditya',
-  'hi-IN': 'anand',
-  'kn-IN': 'priya',
+  'hi-IN': 'aditya',
+  'kn-IN': 'aditya',
 };
 
 function wordTokens(text: string): string[] {
   return text.toLowerCase().match(WORD_TOKEN_RE) ?? [];
 }
 
-/** Requires repeated unsupported-language evidence before disrupting a call. */
-export class UnsupportedLanguageDebouncer {
-  private candidate: string | null = null;
-  private count = 0;
+/**
+ * Remove words written in scripts outside English, Hindi, and Kannada.
+ * This is primarily for STT artifacts such as a stray Malayalam filler before
+ * an otherwise English sentence. Pure unsupported-language turns become empty.
+ */
+export function stripUnsupportedLanguageFragments(text: string): string {
+  let result = '';
+  let droppingMarks = false;
 
-  observe(language: string | null): string | null {
-    if (!language) {
-      this.reset();
-      return null;
+  for (const character of text) {
+    if (/\p{L}/u.test(character)) {
+      droppingMarks = !isAllowedLanguageCharacter(character);
+      if (!droppingMarks) result += character;
+      continue;
     }
-
-    const normalized = language.toLowerCase();
-    if (this.candidate === normalized) {
-      this.count += 1;
-    } else {
-      this.candidate = normalized;
-      this.count = 1;
+    if (/\p{M}/u.test(character)) {
+      if (!droppingMarks && isAllowedLanguageCharacter(character)) {
+        result += character;
+      }
+      continue;
     }
-
-    return this.count >= 2 ? normalized : null;
+    droppingMarks = false;
+    result += character;
   }
 
-  reset(): void {
-    this.candidate = null;
-    this.count = 0;
-  }
+  return result
+    .replace(/^\s*[.,!?;:।]+\s*/u, '')
+    .replace(/\s+([.,!?;:।])/gu, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 export class LanguageManager {
@@ -223,7 +260,18 @@ export class LanguageManager {
     if (LanguageManager.isShortYesNo(text)) return null;
 
     const stt = sttRaw?.trim().toLowerCase();
-    if (GUJARATI_RE.test(text)) return 'gu-IN';
+    for (const [script, code] of UNSUPPORTED_SCRIPT_CODES) {
+      if (script.test(text)) return code;
+    }
+    if (
+      [...text].some(
+        (character) =>
+          /[\p{L}\p{M}]/u.test(character) &&
+          !isAllowedLanguageCharacter(character),
+      )
+    ) {
+      return 'unsupported';
+    }
     if (
       stt &&
       /^[a-z]{2}(?:-|$)/.test(stt) &&
@@ -237,8 +285,19 @@ export class LanguageManager {
   /** True for short availability answers that should not change conversation language. */
   static isShortYesNo(text: string): boolean {
     const tokens = wordTokens(text.trim());
-    if (tokens.length === 0 || tokens.length > 3) return false;
-    return tokens.every((token) => FAST_PATH_YES_NO.has(token));
+    if (tokens.length === 0 || tokens.length > 4) return false;
+    const meaningful = tokens.filter((token) => !SHORT_YES_NO_FILLERS.has(token));
+    return (
+      meaningful.length > 0 &&
+      (meaningful.every((token) => FAST_PATH_YES.has(token)) ||
+        meaningful.every((token) => FAST_PATH_NO.has(token)))
+    );
+  }
+
+  /** Strong enough to switch TTS immediately instead of waiting for confirmation. */
+  static hasStrongLanguageSwitchEvidence(text: string): boolean {
+    if (LanguageManager.detectExplicitLanguageRequest(text)) return true;
+    return wordTokens(text.trim()).length >= 3;
   }
 
   detectFromText(text: string): LanguageDetectionResult {

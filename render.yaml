@@ -57,6 +57,8 @@ envVarGroups:
         sync: false
       - key: SARVAM_API_KEY
         sync: false
+      - key: SARVAM_TTS_SPEAKER
+        value: aditya
       - key: TTS_PROVIDER
         value: elevenlabs
       - key: ELEVEN_API_KEY
@@ -64,7 +66,7 @@ envVarGroups:
       - key: ELEVENLABS_VOICE_ID
         sync: false
       - key: ELEVENLABS_MODEL
-        value: eleven_flash_v2_5
+        value: eleven_v3
       - key: SIP_OUTBOUND_TRUNK_ID
         sync: false
       - key: DATABASE_URL
@@ -104,7 +106,7 @@ envVarGroups:
       - key: CALLER_NAME
         value: Jitesh
       - key: TTS_VOLUME
-        value: "0.55"
+        value: "1.15"
       - key: TTS_SPEED
         value: "0.8"
       - key: LLM_MODEL

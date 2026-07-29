@@ -11,8 +11,10 @@ export function applySpokenLanguage(
   language: LanguageCode,
   provider: TtsProvider,
   elevenLabsVoiceId?: string,
+  sarvamSpeaker?: string,
 ): string {
-  const speaker = new LanguageManager(language).getTtsSpeaker(language);
+  const speaker =
+    sarvamSpeaker ?? new LanguageManager(language).getTtsSpeaker(language);
   const update =
     provider === 'elevenlabs'
       ? {
