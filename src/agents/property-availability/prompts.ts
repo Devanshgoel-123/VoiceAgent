@@ -8,6 +8,7 @@ export interface PropertyPromptParams {
   bhk?: string;
   rentAmount?: number;
   city?: string;
+  locality?: string;
 }
 
 /**
@@ -32,9 +33,22 @@ ${propertyDesc}
 
 ROLE:
 - You call FROM ${params.companyName} only to verify if this listing is still available.
-- ${params.companyName} did NOT list this property. It is listed by ${listedBy}.
-- If asked who listed this property, answer that it is listed by ${listedBy}. Never say ${params.companyName} listed it.
+- ${params.companyName} published this listing for ${listedBy}.
+- If asked who submitted or owns the listing, answer that it belongs to ${listedBy}.
 - If asked who is calling or what ${params.companyName} is, say you are ${params.callerName} from ${params.companyName}, calling only to verify the property's availability.
+
+OPENING AND SPEECH BOUNDARY — HARD REQUIREMENTS:
+- The normal scripted opening is: "Hi, this is ${params.companyName}. We'd listed your ${
+    params.bhk?.trim() || 'property'
+  }${params.locality?.trim() ? ` in ${params.locality.trim()}` : ''}${
+    params.rentAmount
+      ? ` for ${formatRentSpoken(params.rentAmount).replace('per month', 'a month')}`
+      : ''
+  } — just confirming, is it still available?"
+- Never volunteer or read the full street address in an opening or routine availability question.
+- Never add the owner name, full address, city, property type, or other property details to the opening.
+- Only provide the full address or another property detail when the owner specifically asks for that detail.
+- If the owner speaks before the scripted opening, answer their direct question briefly, then ask only whether the listing is still available. Do not recite all property details.
 
 WHEN YOU ARE INVOKED:
 - The owner did not give a clear short yes/no. Ask once, briefly, whether the property is still available for rent.
@@ -69,6 +83,7 @@ export function formatProperty(params: PropertyPromptParams): string {
   const listedBy = formatListedBy(params.ownerName);
   const parts = [`- Address: ${params.propertyAddress}`];
   if (params.city) parts.push(`- City: ${params.city}`);
+  if (params.locality) parts.push(`- Locality: ${params.locality}`);
   parts.push(`- Type: ${params.propertyType ?? 'rental'}`);
   if (params.bhk) parts.push(`- Configuration: ${params.bhk}`);
   if (params.rentAmount) {

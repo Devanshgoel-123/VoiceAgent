@@ -4,6 +4,10 @@ import {
   HANGUP_DEFER_MS,
   ownershipMismatchClosing,
 } from '../src/adapters/livekit-call-session.js';
+import {
+  OUTBOUND_ENDPOINTING_MIN_MS,
+  TURN_COMMIT_FALLBACK_MS,
+} from '../src/config/call-config.js';
 
 describe('availability closing messages', () => {
   it('explains follow-up and number saving after a yes', () => {
@@ -133,6 +137,11 @@ class FakeCallLifecycle {
 }
 
 describe('Call lifecycle hangup contract', () => {
+  it('waits for delayed Sarvam final transcripts before committing a turn', () => {
+    expect(OUTBOUND_ENDPOINTING_MIN_MS).toBeGreaterThanOrEqual(750);
+    expect(TURN_COMMIT_FALLBACK_MS).toBeGreaterThanOrEqual(750);
+  });
+
   it('runs goodbye then hangup after deferred schedule (no speech-handle wait)', async () => {
     const lifecycle = new FakeCallLifecycle();
     lifecycle.deferMs = 20;
@@ -188,6 +197,7 @@ describe('Call lifecycle hangup contract', () => {
 });
 
 describe('SarvamVoicePipeline', () => {
+
   it('creates a bundle with stt/llm/tts', async () => {
     vi.resetModules();
 
@@ -229,13 +239,20 @@ describe('scripted opening messages', () => {
       companyWebsite: 'galinest.com',
       callerName: 'Jitesh',
       propertyAddress: '42, Indiranagar',
+      bhk: '2 BHK',
+      locality: 'Indiranagar',
+      rentAmount: 25000,
     };
 
-    expect(openingForLanguage(params, 'en-IN')).toContain('Jitesh');
-    expect(openingForLanguage(params, 'en-IN')).toContain('Galinest');
-    expect(openingForLanguage(params, 'en-IN')).toContain('available for rent');
+    expect(openingForLanguage(params, 'en-IN')).toBe(
+      "Hi, this is Galinest. We'd listed your 2 BHK in Indiranagar for 25,000 rupees a month — just confirming, is it still available?",
+    );
+    expect(openingForLanguage(params, 'en-IN')).not.toContain('42, Indiranagar');
+    expect(openingForLanguage(params, 'en-IN')).not.toContain('Jitesh');
     expect(openingForLanguage(params, 'en-IN')).not.toContain('Devansh');
-    expect(openingForLanguage(params, 'hi-IN')).toContain('किराये');
-    expect(openingForLanguage(params, 'kn-IN')).toContain('ಬಾಡಿಗೆ');
+    expect(openingForLanguage(params, 'hi-IN')).toContain('Indiranagar');
+    expect(openingForLanguage(params, 'hi-IN')).not.toContain('42, Indiranagar');
+    expect(openingForLanguage(params, 'kn-IN')).toContain('Indiranagar');
+    expect(openingForLanguage(params, 'kn-IN')).not.toContain('42, Indiranagar');
   });
 });

@@ -28,6 +28,7 @@ import {
   type AvailabilityOutcome,
 } from './closing-messages.js';
 import { applySpokenLanguage } from './spoken-language.js';
+import { filterToolCallMarkup } from './tts-text-transforms.js';
 import type { VoicePipelineBundle } from './voice-pipeline.js';
 
 export type { AvailabilityOutcome };
@@ -101,6 +102,8 @@ export class LiveKitCallSession implements CallLifecycle {
   private sessionErrorCount = 0;
   private ownerRespondedAfterOpening = false;
   private lastFinalOwnerTranscript?: string;
+  private pendingLanguageSwitch: LanguageCode | null = null;
+  private pendingLanguageSwitchCount = 0;
 
   constructor(options: LiveKitCallSessionOptions) {
     this.ctx = options.jobContext;
@@ -118,6 +121,11 @@ export class LiveKitCallSession implements CallLifecycle {
       llm: this.pipeline.llm as never,
       tts: this.pipeline.tts as never,
       vad: null,
+      ttsTextTransforms: [
+        'filter_markdown',
+        filterToolCallMarkup,
+        'filter_emoji',
+      ],
       turnHandling: {
         turnDetection: 'stt',
         endpointing: {
@@ -215,6 +223,32 @@ export class LiveKitCallSession implements CallLifecycle {
 
   getLastOwnerTranscript(): string | undefined {
     return this.lastFinalOwnerTranscript;
+  }
+
+  private shouldApplyLanguageSwitch(
+    language: LanguageCode,
+    transcript: string,
+  ): boolean {
+    if (LanguageManager.hasStrongLanguageSwitchEvidence(transcript)) {
+      this.resetPendingLanguageSwitch();
+      return true;
+    }
+
+    if (this.pendingLanguageSwitch === language) {
+      this.pendingLanguageSwitchCount += 1;
+    } else {
+      this.pendingLanguageSwitch = language;
+      this.pendingLanguageSwitchCount = 1;
+    }
+
+    if (this.pendingLanguageSwitchCount < 2) return false;
+    this.resetPendingLanguageSwitch();
+    return true;
+  }
+
+  private resetPendingLanguageSwitch(): void {
+    this.pendingLanguageSwitch = null;
+    this.pendingLanguageSwitchCount = 0;
   }
 
   recordOwnerOutcome(outcome: OwnerOutcome, summary: string): void {
@@ -419,6 +453,8 @@ export class LiveKitCallSession implements CallLifecycle {
         : null;
       if (unsupportedLanguage && !confirmedUnsupportedLanguage) {
         clearTurnCommitTimer();
+        session.clearUserTurn();
+        this.resetPendingLanguageSwitch();
         callInfo(
           `language: ignoring isolated unsupported hint=${unsupportedLanguage} heard="${truncateForLog(
             ev.transcript,
@@ -431,6 +467,8 @@ export class LiveKitCallSession implements CallLifecycle {
       if (confirmedUnsupportedLanguage) {
         this.unsupportedLanguageDebouncer.reset();
         clearTurnCommitTimer();
+        session.clearUserTurn();
+        this.resetPendingLanguageSwitch();
         this.clearOpeningGreeting();
         this.openingGreeted = true;
         // We handled this turn and are now waiting for a supported-language reply.
@@ -463,14 +501,25 @@ export class LiveKitCallSession implements CallLifecycle {
         const sttHint = ev.language ?? 'null';
         const heard = truncateForLog(ev.transcript);
 
-        if (resolved && resolved !== current) {
+        if (
+          resolved &&
+          resolved !== current &&
+          this.shouldApplyLanguageSwitch(resolved, ev.transcript)
+        ) {
           this.setSpokenLanguage(resolved, `stt heard="${heard}" sttHint=${sttHint}`);
+        } else if (resolved && resolved !== current) {
+          callInfo(
+            `language: keep ${current} (waiting for confirmation of ${resolved}, heard="${heard}" sttHint=${sttHint})`,
+            this.logger,
+          );
         } else if (resolved && resolved === current) {
+          this.resetPendingLanguageSwitch();
           callInfo(
             `language: keep ${current} (confirmed, heard="${heard}" sttHint=${sttHint})`,
             this.logger,
           );
         } else {
+          this.resetPendingLanguageSwitch();
           callInfo(
             `language: keep ${current} (no switch, heard="${heard}" sttHint=${sttHint})`,
             this.logger,

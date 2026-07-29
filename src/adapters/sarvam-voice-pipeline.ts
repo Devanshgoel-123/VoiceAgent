@@ -13,6 +13,7 @@ import type {
   VoicePipelineProvider,
 } from './voice-pipeline.js';
 
+
 /**
  * Sarvam STT + LLM, with TTS from either Sarvam or ElevenLabs.
  * STT = ears, LLM = brain, TTS = mouth.
@@ -104,11 +105,12 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     }
 
     const speed = Math.min(1.2, Math.max(0.8, this.settings.ttsSpeed));
+    const model = this.settings.elevenLabsModel;
 
     const elevenLabsTts = withTtsVolumeGain(
       new elevenlabs.TTS({
         apiKey: this.settings.elevenLabsApiKey,
-        model: this.settings.elevenLabsModel,
+        model,
         voiceId: this.settings.elevenLabsVoiceId,
         language,
         encoding: 'pcm_16000',
@@ -127,7 +129,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
 
     if (
       this.settings.elevenLabsTransport === 'websocket' &&
-      this.settings.elevenLabsModel !== 'eleven_v3'
+      model !== 'eleven_v3'
     ) {
       return elevenLabsTts;
     }

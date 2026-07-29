@@ -76,6 +76,7 @@ export function createApp(
           bhk: body.bhk,
           rentAmount: body.rent_amount,
           city: body.city,
+          locality: body.locality,
         },
         companyName: settings.companyName,
         callerName: body.caller_name?.trim() || settings.callerName,
