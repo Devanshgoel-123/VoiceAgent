@@ -106,7 +106,7 @@ envVarGroups:
       - key: CALLER_NAME
         value: Jitesh
       - key: TTS_VOLUME
-        value: "0.55"
+        value: "1.15"
       - key: TTS_SPEED
         value: "0.8"
       - key: LLM_MODEL

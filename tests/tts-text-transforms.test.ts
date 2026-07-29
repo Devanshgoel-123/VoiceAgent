@@ -119,7 +119,7 @@ describe('normalizeSpeechText', () => {
     );
 
     expect(output).toBe(
-      "It's the 2 B H K in Indiranagar. Is it still available?",
+      "It's the 2 BHK in Indiranagar. Is it still available?",
     );
   });
 
@@ -131,7 +131,7 @@ describe('normalizeSpeechText', () => {
     );
 
     expect(output).toBe(
-      'I have multiple B H K units. Address: 42, 5th Cross, Indiranagar.',
+      'I have multiple BHKs. Address: 42, 5th Cross, Indiranagar.',
     );
   });
 });

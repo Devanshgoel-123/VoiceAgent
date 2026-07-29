@@ -2,13 +2,13 @@ import type { AudioFrame } from '@livekit/rtc-node';
 
 /**
  * Scale PCM Int16 samples in-place.
- * gain 1.0 = unchanged; 0.65 ≈ noticeably quieter on phone.
+ * gain 1.0 = unchanged; values above 1 boost with Int16 clipping protection.
  */
 export function applyTtsVolumeGain(frame: AudioFrame, gain: number): AudioFrame {
-  if (!Number.isFinite(gain) || gain >= 0.999) {
+  if (!Number.isFinite(gain) || Math.abs(gain - 1) < 0.001) {
     return frame;
   }
-  const clamped = Math.min(1, Math.max(0.1, gain));
+  const clamped = Math.min(2, Math.max(0.1, gain));
   const data = frame.data;
   for (let i = 0; i < data.length; i += 1) {
     data[i] = Math.max(-32768, Math.min(32767, Math.round(data[i]! * clamped)));
@@ -26,7 +26,7 @@ export function withTtsVolumeGain<T extends { synthesize: SynthesizeFn }>(
   ttsInstance: T,
   gain: number,
 ): T {
-  if (!Number.isFinite(gain) || gain >= 0.999) {
+  if (!Number.isFinite(gain) || Math.abs(gain - 1) < 0.001) {
     return ttsInstance;
   }
 

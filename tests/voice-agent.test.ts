@@ -236,6 +236,21 @@ describe('TTS volume gain', () => {
     applyTtsVolumeGain(frame as never, 0.5);
     expect([...data]).toEqual([5000, -5000, 10000]);
   });
+
+  it('boosts quiet PCM samples and clips safely at Int16 limits', async () => {
+    const { applyTtsVolumeGain } = await import('../src/adapters/tts-volume.js');
+    const data = new Int16Array([10000, -10000, 30000, -30000]);
+    const frame = {
+      data,
+      sampleRate: 16000,
+      channels: 1,
+      samplesPerChannel: 4,
+    };
+
+    applyTtsVolumeGain(frame as never, 1.5);
+
+    expect([...data]).toEqual([15000, -15000, 32767, -32768]);
+  });
 });
 
 describe('PropertyAvailabilityCallJob', () => {
