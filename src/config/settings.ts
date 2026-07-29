@@ -71,9 +71,9 @@ function parseElevenLabsTransport(
 }
 
 function parseTtsVolume(raw: string | undefined): number {
-  const parsed = Number(raw ?? '0.65');
-  if (!Number.isFinite(parsed)) return 0.65;
-  return Math.min(1, Math.max(0.1, parsed));
+  const parsed = Number(raw ?? '1.15');
+  if (!Number.isFinite(parsed)) return 1.15;
+  return Math.min(2, Math.max(0.1, parsed));
 }
 
 function parseTtsSpeed(raw: string | undefined): number {
