@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   availabilityClosing,
   HANGUP_DEFER_MS,
+  OwnerTurnCommitScheduler,
   ownershipMismatchClosing,
 } from '../src/adapters/livekit-call-session.js';
 import {
@@ -134,8 +135,8 @@ class FakeCallLifecycle {
 
 describe('Call lifecycle hangup contract', () => {
   it('waits for delayed Sarvam final transcripts before committing a turn', () => {
-    expect(OUTBOUND_ENDPOINTING_MIN_MS).toBeGreaterThanOrEqual(750);
-    expect(TURN_COMMIT_FALLBACK_MS).toBeGreaterThanOrEqual(750);
+    expect(OUTBOUND_ENDPOINTING_MIN_MS).toBeGreaterThanOrEqual(1500);
+    expect(TURN_COMMIT_FALLBACK_MS).toBeGreaterThanOrEqual(1500);
   });
 
   it('runs goodbye then hangup after deferred schedule (no speech-handle wait)', async () => {
@@ -189,6 +190,30 @@ describe('Call lifecycle hangup contract', () => {
     expect(lifecycle.events).toContain('hangup:session_shutdown_drain_false');
     expect(lifecycle.events).toContain('hangup:deleteRoom');
     expect(lifecycle.events).toContain('hangup:done');
+  });
+});
+
+describe('owner turn commit scheduler', () => {
+  it('cancels on resumed speech, then commits the complete turn after silence', () => {
+    vi.useFakeTimers();
+    try {
+      const committed: string[] = [];
+      const scheduler = new OwnerTurnCommitScheduler(1500);
+
+      scheduler.schedule(() => committed.push('partial'));
+      vi.advanceTimersByTime(1000);
+      expect(scheduler.cancel()).toBe(true);
+      vi.advanceTimersByTime(1000);
+      expect(committed).toEqual([]);
+
+      scheduler.schedule(() => committed.push('full turn'));
+      vi.advanceTimersByTime(1499);
+      expect(committed).toEqual([]);
+      vi.advanceTimersByTime(1);
+      expect(committed).toEqual(['full turn']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

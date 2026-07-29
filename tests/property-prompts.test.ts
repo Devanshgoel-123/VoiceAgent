@@ -46,6 +46,8 @@ describe('property availability prompts', () => {
     );
     expect(instructions).toContain('use natural everyday Hinglish');
     expect(instructions).toContain('Prefer one short sentence');
+    expect(instructions).toContain('two-attempt flow');
+    expect(instructions).toContain('manual intervention');
     expect(instructions).toContain(
       'Never volunteer or read the full street address',
     );

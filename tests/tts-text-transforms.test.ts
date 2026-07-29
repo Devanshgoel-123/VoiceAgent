@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   enforceSelectedSpeechLanguage,
   filterToolCallMarkup,
+  normalizeSpeechText,
 } from '../src/adapters/tts-text-transforms.js';
 
 function chunked(...chunks: string[]): ReadableStream<string> {
@@ -102,5 +103,35 @@ describe('enforceSelectedSpeechLanguage', () => {
 
     expect(hindi).toMatch(/^Sorry,/);
     expect(kannada).toMatch(/^Sorry,/);
+  });
+});
+
+describe('normalizeSpeechText', () => {
+  it('normalizes the exact malformed BHK response seen in call logs', async () => {
+    const output = await collect(
+      normalizeSpeechText(
+        chunked(
+          "It's the 2\u202fB",
+          'HK in Indiranagar.',
+          'Is it still available?',
+        ),
+      ),
+    );
+
+    expect(output).toBe(
+      "It's the 2 B H K in Indiranagar. Is it still available?",
+    );
+  });
+
+  it('normalizes plural BHK and address punctuation for speech', async () => {
+    const output = await collect(
+      normalizeSpeechText(
+        chunked('I have multiple BHKs.Address: 42,5th Cross,Indiranagar.'),
+      ),
+    );
+
+    expect(output).toBe(
+      'I have multiple B H K units. Address: 42, 5th Cross, Indiranagar.',
+    );
   });
 });

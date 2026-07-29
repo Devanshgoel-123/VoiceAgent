@@ -64,6 +64,43 @@ export function filterToolCallMarkup(
   });
 }
 
+/**
+ * Normalize model typography into telephony-friendly spoken text.
+ * Models commonly emit narrow no-break spaces and omit spaces between streamed
+ * sentences; both can cause multilingual TTS to pronounce nearby text poorly.
+ */
+export function normalizeSpeechText(
+  input: ReadableStream<string>,
+): ReadableStream<string> {
+  return new ReadableStream<string>({
+    async start(controller) {
+      const reader = input.getReader();
+      let text = '';
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          text += value;
+        }
+
+        const normalized = text
+          .replace(/[\u00A0\u2007\u202F]/g, ' ')
+          .replace(/([.!?।])(?=[\p{L}\p{N}])/gu, '$1 ')
+          .replace(/,(?=\S)/g, ', ')
+          .replace(/[ \t]{2,}/g, ' ');
+
+        if (normalized) controller.enqueue(normalized);
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      } finally {
+        reader.releaseLock();
+      }
+    },
+  });
+}
+
 const LANGUAGE_FALLBACKS: Record<Exclude<LanguageCode, 'unknown'>, string> = {
   'en-IN':
     'Sorry, I had trouble generating that response. Please repeat your question in English, Hindi, or Kannada.',
