@@ -35,6 +35,11 @@ export type SecureDispatchResult =
   | { ok: true; result: DispatchResult }
   | { ok: false; failure: SecureDispatchFailure };
 
+export interface SecureDispatchOptions {
+  /** Skip the recent-call cooldown check (still enforces the active-call conflict check). */
+  forced?: boolean;
+}
+
 /**
  * Fail-closed dispatch: requires DB, enforces quiet hours + suppression,
  * atomically reserves (property_id, phone_number), then creates LiveKit dispatch.
@@ -43,6 +48,7 @@ export async function secureDispatchPropertyAvailabilityCall(
   job: PropertyAvailabilityCallJob,
   settings: Settings,
   dispatcher: CallJobDispatcher = new CallJobDispatcher(settings),
+  options?: SecureDispatchOptions,
 ): Promise<SecureDispatchResult> {
   if (!isDatabaseEnabled()) {
     return {
@@ -88,7 +94,7 @@ export async function secureDispatchPropertyAvailabilityCall(
   }
 
   try {
-    await repo.reserveDispatchSlot(job, settings.dispatchCooldownMs);
+    await repo.reserveDispatchSlot(job, options?.forced ? 0 : settings.dispatchCooldownMs);
   } catch (error) {
     if (error instanceof ReserveDispatchError) {
       return {

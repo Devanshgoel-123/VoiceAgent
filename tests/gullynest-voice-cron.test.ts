@@ -29,6 +29,7 @@ import {
 } from '../src/integrations/gullynest/outcome-map.js';
 import { persistCallResult } from '../src/jobs/call-outcome-persistence.js';
 import type { CallLogSnapshot } from '../src/jobs/call-log-types.js';
+import { createPropertyAvailabilityJob } from '../src/jobs/models.js';
 import type { Settings } from '../src/config/settings.js';
 import {
   CALLABLE_VOICE_STATUSES,
@@ -40,6 +41,7 @@ import {
   wasContactedWithinCooldown,
 } from '../src/jobs/voice-cron.js';
 import {
+  assertMaxPropertiesNotUsedWithPropertyIds,
   parseListingDateRange,
   parseMaxProperties,
 } from '../src/scripts/run-voice-cron.js';
@@ -112,6 +114,18 @@ describe('shouldReportCallOutcome', () => {
       shouldReportCallOutcome(snapshot({ propertyId: 'PROP-CONSOLE-001' })),
     ).toBe(false);
     expect(shouldReportCallOutcome(snapshot())).toBe(true);
+  });
+
+  it('skips unanswered (not-connected) calls regardless of status', () => {
+    expect(shouldReportCallOutcome(snapshot({ answered: false, status: 'no_answer' }))).toBe(
+      false,
+    );
+    expect(shouldReportCallOutcome(snapshot({ answered: false, status: 'failed' }))).toBe(
+      false,
+    );
+    expect(shouldReportCallOutcome(snapshot({ answered: true, status: 'failed' }))).toBe(
+      true,
+    );
   });
 });
 
@@ -436,6 +450,76 @@ describe('voice recontact filters', () => {
   });
 });
 
+describe('fetchCallableVoiceProperties targeted mode (propertyIds)', () => {
+  it('sends only ids — no status/listingKind/contactedBefore/created filters', async () => {
+    const listAllProperties = vi.fn(async () => [property({ id: 'target-1' })]);
+
+    await fetchCallableVoiceProperties({ listAllProperties } as never, {
+      propertyIds: 'target-1,target-2',
+    });
+
+    expect(listAllProperties).toHaveBeenCalledOnce();
+    expect(listAllProperties).toHaveBeenCalledWith({
+      ids: 'target-1,target-2',
+      status: 'ALL',
+    });
+  });
+
+  it('does not apply status/listingKind/cooldown filtering to targeted results', async () => {
+    const listAllProperties = vi.fn(async () => [
+      property({
+        id: 'target-stale',
+        status: 'STALE',
+        listingKind: 'TENANT',
+        voiceLastContactedAt: new Date().toISOString(),
+      }),
+    ]);
+
+    const properties = await fetchCallableVoiceProperties(
+      { listAllProperties } as never,
+      { propertyIds: 'target-stale' },
+    );
+
+    expect(properties.map((p) => p.id)).toEqual(['target-stale']);
+  });
+
+  it('does not require createdAfter/createdBefore in targeted mode', async () => {
+    const listAllProperties = vi.fn(async () => []);
+    await expect(
+      fetchCallableVoiceProperties({ listAllProperties } as never, {
+        propertyIds: 'target-1',
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it('ignores maxProperties — returns every requested id, not a capped subset', async () => {
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'target-1', shortId: '1' }),
+      property({ id: 'target-2', shortId: '2' }),
+      property({ id: 'target-3', shortId: '3' }),
+    ]);
+
+    const properties = await fetchCallableVoiceProperties(
+      { listAllProperties } as never,
+      { propertyIds: 'target-1,target-2,target-3', maxProperties: 1 },
+    );
+
+    expect(properties).toHaveLength(3);
+    // No maxItems argument forwarded to the client either.
+    expect(listAllProperties).toHaveBeenCalledWith({
+      ids: 'target-1,target-2,target-3',
+      status: 'ALL',
+    });
+  });
+
+  it('still throws for missing createdAfter/createdBefore when propertyIds is not set', async () => {
+    const listAllProperties = vi.fn(async () => []);
+    await expect(
+      fetchCallableVoiceProperties({ listAllProperties } as never, {}),
+    ).rejects.toThrow(/createdAfter and createdBefore are required/);
+  });
+});
+
 describe('runVoiceCronTick', () => {
   afterEach(() => {
     isPhoneSuppressedMock.mockReset().mockResolvedValue(false);
@@ -750,6 +834,108 @@ describe('runVoiceCronTick', () => {
       reason: 'would_be_blocked: suppressed',
     });
   });
+
+  it('targeted mode: does not require createdAfter/createdBefore when propertyIds is set', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async (query) => {
+      expect(query).toEqual({ ids: 'target-1', status: 'ALL' });
+      return [property({ id: 'target-1', status: 'STALE', listingKind: 'AGENT' })];
+    });
+    const dispatch = vi.fn(async (job) => ({
+      ok: true as const,
+      result: {
+        jobId: job.jobId,
+        status: 'dispatched' as const,
+        roomName: 'room',
+        dispatchId: 'd1',
+        agentName: 'test-agent',
+        phoneNumber: job.owner.phoneNumber,
+      },
+    }));
+
+    const summary = await runVoiceCronTick(baseSettings(), {
+      client: { listAllProperties } as never,
+      dispatch,
+      now,
+      propertyIds: 'target-1',
+    });
+
+    expect(summary.dispatched).toBe(1);
+    expect(summary.items[0]).toMatchObject({ propertyId: 'target-1', status: 'dispatched' });
+  });
+
+  it('throws when neither propertyIds nor createdAfter/createdBefore are given', async () => {
+    await expect(
+      runVoiceCronTick(baseSettings(), {
+        client: { listAllProperties: vi.fn() } as never,
+        dispatch: vi.fn(),
+      }),
+    ).rejects.toThrow(/unless --property-id is set/);
+  });
+
+  it('forwards deps.forced through to the dispatch call', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [property({ id: 'p1' })]);
+    const dispatch = vi.fn(
+      async (
+        job: ReturnType<typeof createPropertyAvailabilityJob>,
+        _settings: Settings,
+        _options?: { forced?: boolean },
+      ) => ({
+        ok: true as const,
+        result: {
+          jobId: job.jobId,
+          status: 'dispatched' as const,
+          roomName: 'room',
+          dispatchId: 'd1',
+          agentName: 'test-agent',
+          phoneNumber: job.owner.phoneNumber,
+        },
+      }),
+    );
+
+    await runVoiceCronTick(baseSettings(), {
+      client: { listAllProperties } as never,
+      dispatch,
+      now,
+      forced: true,
+      ...LISTING_DATE_RANGE,
+    });
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.mock.calls[0]![2]).toEqual({ forced: true });
+  });
+
+  it('defaults forced to undefined when not set', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [property({ id: 'p1' })]);
+    const dispatch = vi.fn(
+      async (
+        job: ReturnType<typeof createPropertyAvailabilityJob>,
+        _settings: Settings,
+        _options?: { forced?: boolean },
+      ) => ({
+        ok: true as const,
+        result: {
+          jobId: job.jobId,
+          status: 'dispatched' as const,
+          roomName: 'room',
+          dispatchId: 'd1',
+          agentName: 'test-agent',
+          phoneNumber: job.owner.phoneNumber,
+        },
+      }),
+    );
+
+    await runVoiceCronTick(baseSettings(), {
+      client: { listAllProperties } as never,
+      dispatch,
+      now,
+      ...LISTING_DATE_RANGE,
+    });
+
+    expect(dispatch.mock.calls[0]![2]).toEqual({ forced: undefined });
+  });
 });
 
 describe('parseMaxProperties (--max-properties CLI flag)', () => {
@@ -769,6 +955,22 @@ describe('parseMaxProperties (--max-properties CLI flag)', () => {
     expect(() => parseMaxProperties(['--max-properties=0'])).toThrow();
     expect(() => parseMaxProperties(['--max-properties=abc'])).toThrow();
     expect(() => parseMaxProperties(['--max-properties=-5'])).toThrow();
+  });
+});
+
+describe('assertMaxPropertiesNotUsedWithPropertyIds', () => {
+  it('throws when both --property-id and --max-properties are set', () => {
+    expect(() => assertMaxPropertiesNotUsedWithPropertyIds('id-1', 10)).toThrow(
+      /--max-properties has no effect with --property-id/,
+    );
+  });
+
+  it('is a no-op when only one (or neither) is set', () => {
+    expect(() => assertMaxPropertiesNotUsedWithPropertyIds('id-1', undefined)).not.toThrow();
+    expect(() => assertMaxPropertiesNotUsedWithPropertyIds(undefined, 10)).not.toThrow();
+    expect(() =>
+      assertMaxPropertiesNotUsedWithPropertyIds(undefined, undefined),
+    ).not.toThrow();
   });
 });
 
@@ -896,11 +1098,33 @@ describe('persistCallResult (GullyNest outcome reporting)', () => {
     return fetchImpl;
   }
 
-  it('reports soft_stale for a no_answer snapshot (the previously-missing case)', async () => {
+  it('never calls the outcome API for a no_answer (unconnected) snapshot', async () => {
     const fetchImpl = stubOutcomeFetch();
 
     await persistCallResult(
       snapshot({ status: 'no_answer', ownerOutcome: 'other', answered: false }),
+      gullyNestSettings(),
+    );
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('never calls the outcome API for a failed-to-connect (dial error) snapshot', async () => {
+    const fetchImpl = stubOutcomeFetch();
+
+    await persistCallResult(
+      snapshot({ status: 'failed', ownerOutcome: 'other', answered: false }),
+      gullyNestSettings(),
+    );
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('still reports soft_stale for an answered call with an unclear/failed outcome', async () => {
+    const fetchImpl = stubOutcomeFetch();
+
+    await persistCallResult(
+      snapshot({ status: 'failed', ownerOutcome: 'other', answered: true }),
       gullyNestSettings(),
     );
 
@@ -910,20 +1134,6 @@ describe('persistCallResult (GullyNest outcome reporting)', () => {
       'https://example.com/api/voice-admin/properties/cmqproperty1/call-outcome',
     );
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-      action: 'soft_stale',
-    });
-  });
-
-  it('reports soft_stale for a failed (dial error) snapshot', async () => {
-    const fetchImpl = stubOutcomeFetch();
-
-    await persistCallResult(
-      snapshot({ status: 'failed', ownerOutcome: 'other', answered: false }),
-      gullyNestSettings(),
-    );
-
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    expect(JSON.parse((fetchImpl.mock.calls[0]![1] as RequestInit).body as string)).toEqual({
       action: 'soft_stale',
     });
   });

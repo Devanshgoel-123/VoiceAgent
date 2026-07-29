@@ -88,22 +88,45 @@ export function parseListingDateRange(argv: string[]): {
   return { createdAfter, createdBefore };
 }
 
+/** --max-properties has no meaning in targeted (--property-id) mode — every id is fetched. */
+export function assertMaxPropertiesNotUsedWithPropertyIds(
+  propertyIds: string | undefined,
+  maxProperties: number | undefined,
+): void {
+  if (propertyIds && maxProperties !== undefined) {
+    throw new Error(
+      '--max-properties has no effect with --property-id — targeted mode fetches exactly ' +
+        'the ids you asked for, never a subset.',
+    );
+  }
+}
+
 async function main() {
   registerProcessSafetyHandlers('api');
   const settings = getSettings();
   const args = process.argv.slice(2);
   const once = args.includes('--once');
   const dryRun = args.includes('--dry-run');
+  const forced = args.includes('--forced');
   const maxProperties = parseMaxProperties(args);
-  const { createdAfter, createdBefore } = parseListingDateRange(args);
+  const propertyIds = parseFlagValue(args, '--property-id');
+  assertMaxPropertiesNotUsedWithPropertyIds(propertyIds, maxProperties);
+
+  // Targeted mode (--property-id): status/listingKind/contactedBefore/created
+  // filters are all dropped, so the date range isn't required or used.
+  const { createdAfter, createdBefore } = propertyIds
+    ? { createdAfter: undefined, createdBefore: undefined }
+    : parseListingDateRange(args);
 
   if (once) {
     try {
       const summary = await runVoiceCronTick(settings, {
         maxProperties,
         dryRun,
+        propertyIds,
         createdAfter,
         createdBefore,
+        forced,
       });
       console.log(JSON.stringify({ tickAt: new Date().toISOString(), ...summary }, null, 2));
       if (summary.failed > 0 && summary.dispatched === 0 && summary.wouldDispatch === 0) {
@@ -120,12 +143,22 @@ async function main() {
 
   console.log(
     `Voice cron started (interval=${settings.voiceCronIntervalMs}ms` +
-      `, createdAfter=${createdAfter}, createdBefore=${createdBefore}` +
+      (propertyIds
+        ? `, propertyIds=${propertyIds}`
+        : `, createdAfter=${createdAfter}, createdBefore=${createdBefore}`) +
       (maxProperties ? `, maxProperties=${maxProperties}` : '') +
       (dryRun ? ', dryRun=true' : '') +
+      (forced ? ', forced=true' : '') +
       `). Use --once for a single tick.`,
   );
-  startVoiceCronLoop(settings, { maxProperties, dryRun, createdAfter, createdBefore });
+  startVoiceCronLoop(settings, {
+    maxProperties,
+    dryRun,
+    propertyIds,
+    createdAfter,
+    createdBefore,
+    forced,
+  });
 
   const shutdown = () => {
     console.log('Voice cron stopping…');

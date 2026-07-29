@@ -19,6 +19,7 @@ import type {
 import { evaluateDispatchCompliance } from './compliance.js';
 import {
   secureDispatchPropertyAvailabilityCall,
+  type SecureDispatchOptions,
   type SecureDispatchResult,
 } from './dispatch-pipeline.js';
 import { createPropertyAvailabilityJob } from './models.js';
@@ -31,6 +32,7 @@ export interface VoiceCronDeps {
   dispatch: (
     job: ReturnType<typeof createPropertyAvailabilityJob>,
     settings: Settings,
+    options?: SecureDispatchOptions,
   ) => Promise<SecureDispatchResult>;
   now?: Date;
   /** Cap on properties fetched + processed in one tick (default: unlimited). */
@@ -38,11 +40,23 @@ export interface VoiceCronDeps {
   /** Preview mode: fetch + evaluate as normal, but never actually dispatch a call. */
   dryRun?: boolean;
   /**
-   * Only fetch properties listed (created) in this window — ISO 8601. Hard
-   * requirement: runVoiceCronTick throws if either is missing.
+   * Targeted mode: comma list of property id (cuid) or shortId. When set, this is
+   * the *only* selection criterion sent to GullyNest — status/listingKind/
+   * contactedBefore/createdAfter/createdBefore are all dropped, and the returned
+   * properties are dispatched as-is with no further eligibility filtering.
    */
-  createdAfter: string;
-  createdBefore: string;
+  propertyIds?: string;
+  /**
+   * Only fetch properties listed (created) in this window — ISO 8601. Required
+   * unless `propertyIds` is set (runVoiceCronTick throws otherwise).
+   */
+  createdAfter?: string;
+  createdBefore?: string;
+  /**
+   * Skip the "a call for this property and phone number was placed recently"
+   * cooldown conflict. Does not skip the already-active-call conflict check.
+   */
+  forced?: boolean;
 }
 
 export interface VoiceCronItemResult {
@@ -166,9 +180,15 @@ export interface FetchCallablePropertiesOptions {
   now?: Date;
   /** Cap on properties fetched (default: unlimited). */
   maxProperties?: number;
-  /** Only fetch properties listed (created) in this window — ISO 8601, both required. */
-  createdAfter: string;
-  createdBefore: string;
+  /**
+   * Targeted mode: comma list of property id (cuid) or shortId. When set, this
+   * is the only selection criterion sent — status/listingKind/contactedBefore/
+   * createdAfter/createdBefore are all skipped, server-side and client-side.
+   */
+  propertyIds?: string;
+  /** Only fetch properties listed (created) in this window — ISO 8601. Required unless `propertyIds` is set. */
+  createdAfter?: string;
+  createdBefore?: string;
 }
 
 /**
@@ -176,13 +196,32 @@ export interface FetchCallablePropertiesOptions {
  * createdBefore) that were never voice-contacted, or last contacted before the
  * 7-day recontact cutoff. One request — GullyNest's `status` param takes a comma
  * list, so both statuses are requested together instead of one call each.
+ *
+ * If `propertyIds` is set instead, none of the above applies: fetches exactly
+ * those properties by id, with no status/listingKind/date filtering at all.
  */
 export async function fetchCallableVoiceProperties(
   client: GullyNestClient,
   options: FetchCallablePropertiesOptions,
 ): Promise<VoiceAdminProperty[]> {
   const now = options.now ?? new Date();
-  const { maxProperties, createdAfter, createdBefore } = options;
+  const { maxProperties, propertyIds } = options;
+
+  if (propertyIds) {
+    // Targeted mode: the caller asked for these specific properties — capping
+    // the result would silently drop some of them, so maxProperties doesn't apply.
+    const query: Omit<ListVoicePropertiesQuery, 'page'> = { ids: propertyIds, status: 'ALL' }; //status all to bypass status check on api end
+    const fetched = await client.listAllProperties(query);
+    return dedupePropertiesById(fetched);
+  }
+
+  const { createdAfter, createdBefore } = options;
+  if (!createdAfter || !createdBefore) {
+    throw new Error(
+      'createdAfter and createdBefore are required when propertyIds is not set',
+    );
+  }
+
   const contactedBefore = voiceContactedBeforeCutoff(now);
   const query: Omit<ListVoicePropertiesQuery, 'page'> = {
     status: VOICE_CRON_PROPERTY_STATUSES.join(','),
@@ -225,21 +264,25 @@ export async function runVoiceCronTick(
     );
   }
 
-  if (!deps?.createdAfter || !deps?.createdBefore) {
+  if (!deps?.propertyIds && (!deps?.createdAfter || !deps?.createdBefore)) {
     throw new Error(
-      'createdAfter and createdBefore are required for voice-cron (pass --created-after/--created-before)',
+      'createdAfter and createdBefore are required for voice-cron (pass --created-after/' +
+        '--created-before), unless --property-id is set',
     );
   }
 
-  const dispatch =
-    deps?.dispatch ?? secureDispatchPropertyAvailabilityCall;
+  const dispatch: VoiceCronDeps['dispatch'] =
+    deps?.dispatch ??
+    ((job, jobSettings, options) =>
+      secureDispatchPropertyAvailabilityCall(job, jobSettings, undefined, options));
   const now = deps?.now ?? new Date();
 
   const properties = await fetchCallableVoiceProperties(client, {
     now,
     maxProperties: deps?.maxProperties,
-    createdAfter: deps.createdAfter,
-    createdBefore: deps.createdBefore,
+    propertyIds: deps?.propertyIds,
+    createdAfter: deps?.createdAfter,
+    createdBefore: deps?.createdBefore,
   });
   const items: VoiceCronItemResult[] = [];
   const record = (item: VoiceCronItemResult): void => {
@@ -302,7 +345,7 @@ export async function runVoiceCronTick(
 
     const job = createPropertyAvailabilityJob(input);
     try {
-      const outcome = await dispatch(job, settings);
+      const outcome = await dispatch(job, settings, { forced: deps?.forced });
       if (!outcome.ok) {
         record({
           propertyId: property.id,

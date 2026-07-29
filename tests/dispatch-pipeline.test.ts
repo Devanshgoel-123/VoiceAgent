@@ -177,4 +177,129 @@ describe('secureDispatchPropertyAvailabilityCall', () => {
     expect(reserveDispatchSlot).not.toHaveBeenCalled();
     expect(dispatcher.dispatchPropertyAvailabilityCall).not.toHaveBeenCalled();
   });
+
+  it('passes the configured cooldown by default', async () => {
+    const reserveDispatchSlot = vi.fn(async () => ({ jobId: 'job-1' }));
+
+    vi.doMock('../src/db/call-log-repository.js', () => ({
+      isDatabaseEnabled: () => true,
+      ReserveDispatchError,
+      getCallLogRepository: () => ({
+        isPhoneSuppressed: vi.fn(async () => false),
+        reserveDispatchSlot,
+        attachDispatch: vi.fn(),
+        releaseReservation: vi.fn(),
+      }),
+    }));
+
+    const { secureDispatchPropertyAvailabilityCall } = await import(
+      '../src/jobs/dispatch-pipeline.js'
+    );
+
+    const job = createPropertyAvailabilityJob({
+      owner: { name: 'Ramesh', phoneNumber: '+919876543210' },
+      property: { propertyId: 'P1', address: '42 Indiranagar' },
+    });
+
+    const dispatcher = {
+      dispatchPropertyAvailabilityCall: vi.fn(async () => ({
+        jobId: 'job-1',
+        status: 'dispatched' as const,
+        roomName: 'room-1',
+        dispatchId: 'dispatch-1',
+        agentName: 'test-agent',
+        phoneNumber: '+919876543210',
+      })),
+    };
+
+    const s = settings();
+    await secureDispatchPropertyAvailabilityCall(job, s, dispatcher as never);
+
+    expect(reserveDispatchSlot).toHaveBeenCalledWith(job, s.dispatchCooldownMs);
+  });
+
+  it('forced: true skips the recent-call cooldown (reserveDispatchSlot called with 0)', async () => {
+    const reserveDispatchSlot = vi.fn(async () => ({ jobId: 'job-1' }));
+
+    vi.doMock('../src/db/call-log-repository.js', () => ({
+      isDatabaseEnabled: () => true,
+      ReserveDispatchError,
+      getCallLogRepository: () => ({
+        isPhoneSuppressed: vi.fn(async () => false),
+        reserveDispatchSlot,
+        attachDispatch: vi.fn(),
+        releaseReservation: vi.fn(),
+      }),
+    }));
+
+    const { secureDispatchPropertyAvailabilityCall } = await import(
+      '../src/jobs/dispatch-pipeline.js'
+    );
+
+    const job = createPropertyAvailabilityJob({
+      owner: { name: 'Ramesh', phoneNumber: '+919876543210' },
+      property: { propertyId: 'P1', address: '42 Indiranagar' },
+    });
+
+    const dispatcher = {
+      dispatchPropertyAvailabilityCall: vi.fn(async () => ({
+        jobId: 'job-1',
+        status: 'dispatched' as const,
+        roomName: 'room-1',
+        dispatchId: 'dispatch-1',
+        agentName: 'test-agent',
+        phoneNumber: '+919876543210',
+      })),
+    };
+
+    await secureDispatchPropertyAvailabilityCall(job, settings(), dispatcher as never, {
+      forced: true,
+    });
+
+    expect(reserveDispatchSlot).toHaveBeenCalledWith(job, 0);
+  });
+
+  it('forced: true still returns conflict for an already-active call', async () => {
+    const reserveDispatchSlot = vi.fn(async () => {
+      throw new ReserveDispatchError('conflict_active', 'already active', {
+        jobId: 'job-existing',
+        status: 'in_progress',
+      } as never);
+    });
+
+    vi.doMock('../src/db/call-log-repository.js', () => ({
+      isDatabaseEnabled: () => true,
+      ReserveDispatchError,
+      getCallLogRepository: () => ({
+        isPhoneSuppressed: vi.fn(async () => false),
+        reserveDispatchSlot,
+        attachDispatch: vi.fn(),
+        releaseReservation: vi.fn(),
+      }),
+    }));
+
+    const { secureDispatchPropertyAvailabilityCall } = await import(
+      '../src/jobs/dispatch-pipeline.js'
+    );
+
+    const job = createPropertyAvailabilityJob({
+      owner: { name: 'Ramesh', phoneNumber: '+919876543210' },
+      property: { propertyId: 'P1', address: '42 Indiranagar' },
+    });
+
+    const dispatcher = { dispatchPropertyAvailabilityCall: vi.fn() };
+
+    const outcome = await secureDispatchPropertyAvailabilityCall(
+      job,
+      settings(),
+      dispatcher as never,
+      { forced: true },
+    );
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.failure.kind).toBe('conflict');
+    }
+    expect(dispatcher.dispatchPropertyAvailabilityCall).not.toHaveBeenCalled();
+  });
 });

@@ -6,7 +6,8 @@ import type { VoiceCallOutcomeAction } from './types.js';
  * - yes → available (still listed)
  * - no → stale (confirmed unavailable)
  * - ownership mismatch → stale (invalid owner/listing contact)
- * - no-answer / unclear / failed / other → soft_stale
+ * - unclear / failed / other (call was answered) → soft_stale
+ * Never called for an unanswered call — see shouldReportCallOutcome.
  */
 export function mapSnapshotToCallOutcomeAction(
   snapshot: Pick<CallLogSnapshot, 'ownerOutcome' | 'status' | 'metadata'>,
@@ -17,11 +18,16 @@ export function mapSnapshotToCallOutcomeAction(
   return 'soft_stale';
 }
 
-/** Jobs that should never report back to the marketplace. */
+/**
+ * Jobs that should never report back to the marketplace. In particular, a call
+ * the owner never picked up (or that never connected at all) must not touch
+ * GullyNest — no status change, no `voiceLastContactedAt` stamp, no PATCH sent.
+ */
 export function shouldReportCallOutcome(snapshot: CallLogSnapshot): boolean {
   const propertyId = snapshot.propertyId?.trim();
   if (!propertyId) return false;
   if (snapshot.jobId === 'console-test-job') return false;
   if (propertyId.startsWith('PROP-CONSOLE')) return false;
+  if (!snapshot.answered) return false;
   return true;
 }
