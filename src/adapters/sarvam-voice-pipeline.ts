@@ -31,6 +31,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
     const langMgr = new LanguageManager(language);
     const telephony = options.telephony ?? false;
     const ttsProvider = options.ttsProvider ?? this.settings.ttsProvider;
+    const sarvamSpeaker = this.settings.sarvamTtsSpeaker ?? 'aditya';
 
     return {
       stt: this.createStt('unknown'),
@@ -40,10 +41,11 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
           ? this.createElevenLabsTts(langMgr.getCurrentLanguage())
           : this.createSarvamTts({
               language: langMgr.getCurrentLanguage(),
-              speaker: langMgr.getTtsSpeaker(),
+              speaker: sarvamSpeaker,
               telephony,
             }),
       ttsProvider,
+      sarvamSpeaker,
       elevenLabsVoiceId: this.settings.elevenLabsVoiceId,
     };
   }
@@ -116,9 +118,9 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
         encoding: 'pcm_16000',
         autoMode: true,
         voiceSettings: {
-          stability: 0.5,
+          stability: 0.7,
           similarity_boost: 0.75,
-          style: 0.1,
+          style: 0,
           speed,
           // Speaker boost makes TTS much louder on PSTN — keep off for calls.
           use_speaker_boost: false,

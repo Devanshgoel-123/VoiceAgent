@@ -21,7 +21,7 @@ const scenarios: MixedLanguageScenario[] = [
       { text: 'हाँ, प्रॉपर्टी उपलब्ध है', language: 'hi-IN' },
     ],
     expectedLastLanguage: 'hi-IN',
-    expectedClosingText: 'किरायेदार',
+    expectedClosingText: 'Tenant',
   },
   {
     name: 'Hindi to Kannada',
@@ -30,7 +30,7 @@ const scenarios: MixedLanguageScenario[] = [
       { text: 'ಹೌದು, ಈ ಆಸ್ತಿ ಲಭ್ಯವಿದೆ', language: 'kn-IN' },
     ],
     expectedLastLanguage: 'kn-IN',
-    expectedClosingText: 'ಬಾಡಿಗೆದಾರ',
+    expectedClosingText: 'Tenant',
   },
   {
     name: 'Kannada to English',
@@ -39,7 +39,7 @@ const scenarios: MixedLanguageScenario[] = [
       { text: 'Yes, it is available', language: 'en-IN' },
     ],
     expectedLastLanguage: 'en-IN',
-    expectedClosingText: 'as soon as we find a tenant for you',
+    expectedClosingText: 'matching tenant',
   },
   {
     name: 'English to Hindi to Kannada',
@@ -49,7 +49,7 @@ const scenarios: MixedLanguageScenario[] = [
       { text: 'ಹೌದು', language: 'kn-IN' },
     ],
     expectedLastLanguage: 'kn-IN',
-    expectedClosingText: 'ಬಾಡಿಗೆದಾರ',
+    expectedClosingText: 'Tenant',
   },
 ];
 

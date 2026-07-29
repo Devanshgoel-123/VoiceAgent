@@ -57,6 +57,8 @@ envVarGroups:
         sync: false
       - key: SARVAM_API_KEY
         sync: false
+      - key: SARVAM_TTS_SPEAKER
+        value: aditya
       - key: TTS_PROVIDER
         value: sarvam
       - key: ELEVEN_API_KEY

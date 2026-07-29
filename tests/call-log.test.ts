@@ -99,6 +99,6 @@ describe('availability closing copy', () => {
         companyName: 'Galynest',
         companyWebsite: 'galynest.com',
       }),
-    ).toContain('continue searching for tenants');
+    ).toContain('call when we find a matching tenant');
   });
 });
