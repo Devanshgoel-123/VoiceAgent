@@ -164,11 +164,15 @@ sequenceDiagram
 
 ## Call script (current product behavior)
 
-1. Wait for owner to speak first on real calls (typical “Hello?”)
-2. Greet and ask: **is the property still available?**
-3. Call tool `recordPropertyAvailability`
-4. Save result to disk
-5. Say thank you and hang up (no tenant / visit follow-ups)
+1. Briefly wait for the owner to speak first (typically “Hello?”).
+2. If they do not speak, play a fixed short opening in English:
+   > “Hi, this is Galynest. We’d listed your 2 BHK in Indiranagar for 25,000 rupees a month — just confirming, is it still available?”
+3. The opening uses only **BHK + locality + rent**. It never reads the full street address.
+4. Keep the caller name and complete property details in the LLM context. If the owner asks who is calling, who listed it, the full address, rent, BHK, city, or another property-specific question, answer briefly and then return to the availability question.
+5. Record a clear yes/no with `recordPropertyAvailability`.
+6. Persist the result, play the localized closing, and hang up.
+
+For GullyNest cron calls, locality is selected in this order: `locality` → `subLocality` → `city`. Missing BHK, locality, or rent values are omitted from the opening instead of substituting the full address.
 
 ---
 
@@ -296,10 +300,13 @@ curl -X POST http://localhost:8080/calls/property-availability \
     "bhk": "2 BHK",
     "rent_amount": 25000,
     "city": "Bangalore",
+    "locality": "Indiranagar",
     "preferred_language": "hi-IN",
     "tts_provider": "elevenlabs"
   }'
 ```
+
+`locality` is optional for direct API dispatches, but recommended because the scripted opening uses it instead of `property_address`. The full address is retained for answering a specific owner question.
 
 **Via CLI:**
 
@@ -404,7 +411,7 @@ Each call is tracked in `call_logs` with:
 | `TTS_PROVIDER` | No | `sarvam` (default) or `elevenlabs` |
 | `ELEVEN_API_KEY` | For ElevenLabs | ElevenLabs API key |
 | `ELEVENLABS_VOICE_ID` | No | Voice ID selected from ElevenLabs Voice Library |
-| `ELEVENLABS_MODEL` | No | Default `eleven_v3` (English/Hindi/Kannada). Use `eleven_flash_v2_5` only for lower-latency English/Hindi. |
+| `ELEVENLABS_MODEL` | No | Default `eleven_v3` (required for English/Hindi/Kannada). `eleven_flash_v2_5` is automatically upgraded to v3 because it rejects Kannada. |
 | `ELEVENLABS_TRANSPORT` | No | `http` (reliable default) or `websocket` (lower latency, currently susceptible to close code 1006) |
 | `SIP_OUTBOUND_TRUNK_ID` | For phone calls | Outbound SIP trunk (`ST_...`) |
 | `DATABASE_URL` | For DB logging | Postgres connection string (Drizzle). Enables `call_logs` persistence and API result reads |

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { CallLifecycle } from '../../adapters/livekit-call-session.js';
 import { openingForLanguage } from '../../adapters/closing-messages.js';
 import { getSettings } from '../../config/settings.js';
-import { callError } from '../../core/call-logger.js';
+import { callDebug, callError } from '../../core/call-logger.js';
 import { LanguageManager } from '../../core/language-manager.js';
 import { isOwnershipMismatch } from '../../core/owner-intent.js';
 import type { CallMetadata } from '../../core/types.js';
@@ -53,6 +53,7 @@ class PropertyAvailabilityAgent extends voice.Agent {
         bhk: metadata.bhk as string | undefined,
         rentAmount: metadata.rent_amount as number | undefined,
         city: metadata.city as string | undefined,
+        locality: metadata.property_locality as string | undefined,
       }),
       tools: buildPropertyTools(state, lifecycle),
     });
@@ -71,6 +72,11 @@ class PropertyAvailabilityAgent extends voice.Agent {
       companyWebsite: this.state.companyWebsite,
       propertyAddress:
         (this.state.callMetadata.property_address as string) ?? 'your property',
+      bhk: this.state.callMetadata.bhk as string | undefined,
+      locality:
+        (this.state.callMetadata.property_locality as string | undefined) ??
+        (this.state.callMetadata.city as string | undefined),
+      rentAmount: this.state.callMetadata.rent_amount as number | undefined,
     });
     this.session.say(text, { allowInterruptions: true });
   }
@@ -145,7 +151,13 @@ export function buildPropertyTools(state: PropertyWorkflowState, lifecycle?: Cal
       execute: async ({ isAvailable, ownerResponse }) => {
         const actualOwnerResponse =
           lifecycle?.getLastOwnerTranscript()?.trim() || ownerResponse;
-        if (!isClearAvailabilityResponse(actualOwnerResponse)) {
+        const isClear = isClearAvailabilityResponse(actualOwnerResponse);
+        callDebug(
+          `availability tool: requested=${isAvailable ? 'yes' : 'no'} modelResponse=${JSON.stringify(
+            ownerResponse,
+          )} actualTranscript=${JSON.stringify(actualOwnerResponse)} accepted=${isClear}`,
+        );
+        if (!isClear) {
           return (
             'Not recorded: this was a question, uncertainty, or hangup request—not a ' +
             'clear property-availability answer. Answer the owner briefly or ask once ' +

@@ -64,6 +64,11 @@ export function propertyToJobInput(
       bhk: property.bhk ?? undefined,
       rentAmount: property.rentMonthly ?? undefined,
       city: property.city ?? undefined,
+      locality:
+        property.locality?.trim() ||
+        property.subLocality?.trim() ||
+        property.city?.trim() ||
+        undefined,
       propertyType: property.listingUnitType || undefined,
     },
     companyName: settings.companyName,

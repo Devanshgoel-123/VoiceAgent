@@ -64,7 +64,7 @@ envVarGroups:
       - key: ELEVENLABS_VOICE_ID
         sync: false
       - key: ELEVENLABS_MODEL
-        value: eleven_flash_v2_5
+        value: eleven_v3
       - key: SIP_OUTBOUND_TRUNK_ID
         sync: false
       - key: DATABASE_URL

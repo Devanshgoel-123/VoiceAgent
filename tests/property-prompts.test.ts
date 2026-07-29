@@ -23,7 +23,7 @@ describe('property availability prompts', () => {
     expect(text).not.toMatch(/₹|Rs\b/);
   });
 
-  it('attributes the listing to the owner, not the company', () => {
+  it('keeps full property context but forbids reading the address in the opening', () => {
     expect(formatListedBy('Ramesh')).toBe('Ramesh');
     expect(formatListedBy(undefined)).toBe('the owner');
     expect(formatListedBy('')).toBe('the owner');
@@ -34,14 +34,23 @@ describe('property availability prompts', () => {
       callerName: 'Aditi',
       ownerName: 'Ramesh Kumar',
       propertyAddress: '42 Indiranagar',
+      bhk: '2 BHK',
+      locality: 'Indiranagar',
       rentAmount: 25000,
     });
 
     expect(instructions).toContain('Listed by: Ramesh Kumar');
-    expect(instructions).toContain('Galynest did NOT list this property');
+    expect(instructions).toContain('Galynest published this listing for Ramesh Kumar');
     expect(instructions).toContain(
-      'answer that it is listed by Ramesh Kumar',
+      "Hi, this is Galynest. We'd listed your 2 BHK in Indiranagar for 25,000 rupees a month",
     );
+    expect(instructions).toContain(
+      'Never volunteer or read the full street address',
+    );
+    expect(instructions).toContain(
+      'Only provide the full address or another property detail when the owner specifically asks',
+    );
+    expect(instructions).toContain('- Address: 42 Indiranagar');
     expect(instructions).not.toMatch(/Listed by: Galynest/);
   });
 });

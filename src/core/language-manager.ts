@@ -13,12 +13,10 @@ const STRONG_AFFIRMATIVE: Record<string, Set<string>> = {
     'haan',
     'han',
     'ha',
-    'ji',
     'bilkul',
     'haa',
     'हाँ',
     'हां',
-    'जी',
     'ਹਾਂ',
   ]),
   'kn-IN': new Set(['haudu', 'houdu', 'howdu', 'ಹೌದು', 'ಹೌದ್ರಿ', 'ಸರಿ']),
@@ -239,6 +237,12 @@ export class LanguageManager {
     const tokens = wordTokens(text.trim());
     if (tokens.length === 0 || tokens.length > 3) return false;
     return tokens.every((token) => FAST_PATH_YES_NO.has(token));
+  }
+
+  /** Strong enough to switch TTS immediately instead of waiting for confirmation. */
+  static hasStrongLanguageSwitchEvidence(text: string): boolean {
+    if (LanguageManager.detectExplicitLanguageRequest(text)) return true;
+    return wordTokens(text.trim()).length >= 3;
   }
 
   detectFromText(text: string): LanguageDetectionResult {

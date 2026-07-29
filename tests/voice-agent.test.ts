@@ -123,6 +123,7 @@ describe('LanguageManager', () => {
     expect(LanguageManager.isShortYesNo('ji')).toBe(false);
     expect(LanguageManager.isShortYesNo('okay')).toBe(false);
     expect(LanguageManager.isShortYesNo('ha ji')).toBe(false);
+    expect(new LanguageManager('hi-IN').detectFromText('जी').isAffirmative).toBeNull();
     expect(LanguageManager.isShortYesNo('haan')).toBe(true);
     expect(LanguageManager.isShortYesNo('no')).toBe(true);
   });
@@ -152,6 +153,16 @@ describe('LanguageManager', () => {
     expect(
       mgr.resolveSpokenLanguage('how much is the rent for this flat', 'kn-IN'),
     ).toBe('en-IN');
+  });
+
+  it('requires strong evidence before immediately switching languages', () => {
+    expect(LanguageManager.hasStrongLanguageSwitchEvidence('ಅಷ್ಟು.')).toBe(false);
+    expect(
+      LanguageManager.hasStrongLanguageSwitchEvidence(
+        'What is the address of this property?',
+      ),
+    ).toBe(true);
+    expect(LanguageManager.hasStrongLanguageSwitchEvidence('ಕನ್ನಡ')).toBe(true);
   });
 
   it('maps TTS speakers', () => {

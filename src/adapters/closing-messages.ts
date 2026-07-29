@@ -11,6 +11,9 @@ export interface BrandingParams {
 export interface OpeningScriptParams extends BrandingParams {
   callerName: string;
   propertyAddress: string;
+  bhk?: string;
+  locality?: string;
+  rentAmount?: number;
 }
 
 function spokenWebsite(website: string, language: LanguageCode): string {
@@ -35,28 +38,36 @@ export function openingForLanguage(
   params: OpeningScriptParams,
   language: LanguageCode = 'en-IN',
 ): string {
-  const { callerName, companyName, propertyAddress } = params;
+  const { companyName } = params;
+  const property = params.bhk?.trim() || 'property';
+  const locality = params.locality?.trim();
+  const rent = params.rentAmount
+    ? params.rentAmount.toLocaleString('en-IN')
+    : undefined;
 
   if (language === 'hi-IN') {
     return (
-      `नमस्ते, मैं ${callerName} बोल रहा हूँ ${companyName} से। ` +
-      `मैं ${propertyAddress} वाली प्रॉपर्टी के बारे में कॉल कर रहा हूँ। ` +
-      `क्या यह किराये के लिए अभी भी उपलब्ध है?`
+      `नमस्ते, यह ${companyName} से कॉल है। हमने आपकी ${property} संपत्ति` +
+      `${locality ? ` ${locality} में` : ''}` +
+      `${rent ? ` ${rent} रुपये प्रति माह में` : ''} लिस्ट की थी। ` +
+      'बस पुष्टि करनी थी, क्या यह अभी भी उपलब्ध है?'
     );
   }
 
   if (language === 'kn-IN') {
     return (
-      `ನಮಸ್ಕಾರ, ನಾನು ${callerName}, ${companyName} ನಿಂದ ಮಾತನಾಡುತ್ತಿದ್ದೇನೆ. ` +
-      `ನಾನು ${propertyAddress} ನಲ್ಲಿರುವ ಪ್ರಾಪರ್ಟಿ ಬಗ್ಗೆ ಕರೆ ಮಾಡುತ್ತಿದ್ದೇನೆ. ` +
-      `ಇದು ಇನ್ನೂ ಬಾಡಿಗೆಗೆ ಲಭ್ಯವಿದೆಯೇ?`
+      `ನಮಸ್ಕಾರ, ಇದು ${companyName} ನಿಂದ ಕರೆ. ನಾವು ನಿಮ್ಮ ${property} ಸಂपत्तಿ` +
+      `${locality ? ` ಅನ್ನು ${locality} ನಲ್ಲಿ` : ''}` +
+      `${rent ? ` ತಿಂಗಳಿಗೆ ${rent} ರೂಪಾಯಿಗೆ` : ''} ಲಿಸ್ಟ್ ಮಾಡಿದ್ದೇವೆ. ` +
+      'ಇದು ಇನ್ನೂ ಲಭ್ಯವಿದೆಯೇ ಎಂದು ಖಚಿತಪಡಿಸಿಕೊಳ್ಳಲು ಕರೆ ಮಾಡಿದ್ದೇವೆ.'
     );
   }
 
   return (
-    `Hi, this is ${callerName} from ${companyName}. ` +
-    `I'm calling about the property at ${propertyAddress}. ` +
-    `Is it still available for rent?`
+    `Hi, this is ${companyName}. We'd listed your ${property} property` +
+    `${locality ? ` in ${locality}` : ''}` +
+    `${rent ? ` for ${rent} rupees a month` : ''} — ` +
+    'just confirming, is it still available?'
   );
 }
 

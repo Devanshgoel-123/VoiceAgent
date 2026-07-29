@@ -290,6 +290,7 @@ describe('propertyToJobInput', () => {
     );
     expect(input).not.toBeNull();
     expect(input!.owner.name).toBe('Owner');
+    expect(input!.property.locality).toBe('Indiranagar');
   });
 
   it('still skips when phone or address is missing', () => {

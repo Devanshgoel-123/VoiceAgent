@@ -13,7 +13,6 @@ import { CallSessionRecord } from '../jobs/call-session-record.js';
 import { callError, callInfo, callWarn } from './call-logger.js';
 import { registerProcessSafetyHandlers } from './process-safety.js';
 import { isNoAnswerError } from './telephony-errors.js';
-import { LanguageManager } from './language-manager.js';
 import type { CallMetadata } from './types.js';
 
 export type { CallMetadata };
@@ -127,10 +126,9 @@ export function createWorkerConfig(
 
             callSession.armOpeningGreeting({
               waitMs: OWNER_OPENING_WAIT_MS,
-              preferredLanguage:
-                LanguageManager.normalizeLanguageCode(
-                  effectiveMetadata.preferred_language as string | undefined,
-                ) ?? 'en-IN',
+              // The canned opening is always English when the owner is silent.
+              // If they speak first, their detected language drives the response.
+              preferredLanguage: 'en-IN',
               buildOpeningText: (language) =>
                 openingForLanguage(
                   {
@@ -143,6 +141,11 @@ export function createWorkerConfig(
                       (effectiveMetadata.caller_name as string) ?? settings.callerName,
                     propertyAddress:
                       (effectiveMetadata.property_address as string) ?? 'your property',
+                    bhk: effectiveMetadata.bhk as string | undefined,
+                    locality:
+                      (effectiveMetadata.property_locality as string | undefined) ??
+                      (effectiveMetadata.city as string | undefined),
+                    rentAmount: effectiveMetadata.rent_amount as number | undefined,
                   },
                   language,
                 ),
@@ -196,6 +199,7 @@ function getConsoleTestMetadata(settings: Settings): CallMetadata {
     bhk: '2 BHK',
     rent_amount: 25000,
     city: 'Bangalore',
+    property_locality: 'Indiranagar',
     company_name: settings.companyName,
     caller_name: settings.callerName,
     company_website: settings.companyWebsite,

@@ -144,6 +144,10 @@ describe('recordPropertyAvailability tool behavior', () => {
     ).toBe(true);
   });
 
+  it('treats जी as politeness in a clear Hindi negative answer', () => {
+    expect(isClearAvailabilityResponse('जी नहीं, ये उपलब्ध नहीं है।')).toBe(true);
+  });
+
   it('validates the real STT transcript instead of fabricated tool text', async () => {
     const lifecycle: CallLifecycle = {
       scheduleHangup: vi.fn(),
