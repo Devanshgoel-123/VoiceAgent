@@ -4,6 +4,7 @@ import {
   UnsupportedLanguageDebouncer,
 } from '../src/core/language-manager.js';
 import { createPropertyAvailabilityJob, toDispatchMetadata } from '../src/jobs/models.js';
+import { SARVAM_STT_VAD_OPTIONS } from '../src/adapters/sarvam-voice-pipeline.js';
 import { applySpokenLanguage } from '../src/adapters/spoken-language.js';
 
 describe('LanguageManager', () => {
@@ -139,12 +140,31 @@ describe('LanguageManager', () => {
     ).toBeNull();
   });
 
+  it('ignores one isolated unsupported-language fragment', () => {
+    const debouncer = new UnsupportedLanguageDebouncer();
+    expect(debouncer.observe('gu-in')).toBeNull();
+  });
+
   it('requires two consecutive unsupported-language turns', () => {
     const debouncer = new UnsupportedLanguageDebouncer();
     expect(debouncer.observe('mr-in')).toBeNull();
-    expect(debouncer.observe(null)).toBeNull();
-    expect(debouncer.observe('mr-in')).toBeNull();
     expect(debouncer.observe('mr-in')).toBe('mr-in');
+  });
+
+  it('resets unsupported-language candidate when supported speech arrives', () => {
+    const debouncer = new UnsupportedLanguageDebouncer();
+    expect(debouncer.observe('gu-in')).toBeNull();
+    // Supported / unknown speech clears the candidate (null from detectUnsupportedLanguage).
+    expect(debouncer.observe(null)).toBeNull();
+    expect(debouncer.observe('gu-in')).toBeNull();
+    expect(debouncer.observe('gu-in')).toBe('gu-in');
+  });
+
+  it('does not confirm across different unsupported languages', () => {
+    const debouncer = new UnsupportedLanguageDebouncer();
+    expect(debouncer.observe('gu-in')).toBeNull();
+    expect(debouncer.observe('ml-in')).toBeNull();
+    expect(debouncer.observe('ml-in')).toBe('ml-in');
   });
 
   it('does not flap to Kannada from STT alone on English speech', () => {
@@ -158,6 +178,13 @@ describe('LanguageManager', () => {
     expect(manager.getTtsSpeaker('hi-IN')).toBe('anand');
     expect(manager.getTtsSpeaker('kn-IN')).toBe('priya');
     expect(manager.getTtsSpeaker('en-IN')).toBe('aditya');
+  });
+});
+
+describe('Sarvam STT background-voice guards', () => {
+  it('disables high VAD sensitivity for quieter telephony input', () => {
+    expect(SARVAM_STT_VAD_OPTIONS.highVadSensitivity).toBe(false);
+    expect(SARVAM_STT_VAD_OPTIONS.positiveSpeechThreshold).toBeGreaterThan(0.5);
   });
 });
 

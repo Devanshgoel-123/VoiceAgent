@@ -14,6 +14,21 @@ import type {
 } from './voice-pipeline.js';
 
 /**
+ * Prefer quieter VAD so distant/background speech is less likely to open a turn.
+ * flushSignal stays on so Sarvam still drives STT-based turn boundaries.
+ */
+export const SARVAM_STT_VAD_OPTIONS = {
+  highVadSensitivity: false,
+  positiveSpeechThreshold: 0.7,
+  negativeSpeechThreshold: 0.3,
+  minSpeechFrames: 3,
+  negativeFramesCount: 3,
+  negativeFramesWindow: 15,
+  startSpeechVolumeThreshold: -40,
+  preSpeechPadFrames: 3,
+} as const;
+
+/**
  * Sarvam STT + LLM, with TTS from either Sarvam or ElevenLabs.
  * STT = ears, LLM = brain, TTS = mouth.
  */
@@ -54,14 +69,7 @@ export class SarvamVoicePipeline implements VoicePipelineProvider {
       languageCode,
       mode: 'transcribe',
       flushSignal: true,
-      highVadSensitivity: false,
-      positiveSpeechThreshold: 0.7,
-      negativeSpeechThreshold: 0.3,
-      minSpeechFrames: 3,
-      negativeFramesCount: 3,
-      negativeFramesWindow: 15,
-      startSpeechVolumeThreshold: -40,
-      preSpeechPadFrames: 3,
+      ...SARVAM_STT_VAD_OPTIONS,
     });
   }
 
