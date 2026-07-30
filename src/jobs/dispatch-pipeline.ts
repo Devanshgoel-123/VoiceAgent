@@ -4,6 +4,7 @@ import {
   isDatabaseEnabled,
   ReserveDispatchError,
 } from '../db/call-log-repository.js';
+import { createGullyNestClientFromSettings } from '../integrations/gullynest/client.js';
 import { evaluateDispatchCompliance } from './compliance.js';
 import { CallJobDispatcher } from './dispatcher.js';
 import type {
@@ -124,6 +125,22 @@ export async function secureDispatchPropertyAvailabilityCall(
       roomName: result.roomName,
       dispatchId: result.dispatchId,
     });
+
+    // Best-effort: lets GullyNest's own contactedBefore filter exclude this
+    // property immediately, instead of only learning about it once the call
+    // completes (reportCallOutcome). Never fails the dispatch — correctness
+    // is already guaranteed by the reservation above, this is purely freshness.
+    const gullyClient = createGullyNestClientFromSettings(settings);
+    if (gullyClient) {
+      try {
+        await gullyClient.markContacted(job.property.propertyId);
+      } catch (markContactedError) {
+        console.warn(
+          `gullynest mark-contacted failed property=${job.property.propertyId}: ${markContactedError}`,
+        );
+      }
+    }
+
     return { ok: true, result };
   } catch (error) {
     try {

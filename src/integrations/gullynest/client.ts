@@ -4,6 +4,7 @@ import type {
   VoiceAdminPropertiesResponse,
   VoiceCallOutcomeAction,
   VoiceCallOutcomeResponse,
+  VoiceMarkContactedResponse,
 } from './types.js';
 
 export class GullyNestApiError extends Error {
@@ -86,6 +87,17 @@ export class GullyNestClient {
     const encoded = encodeURIComponent(propertyId);
     const path = `/api/voice-admin/properties/${encoded}/call-outcome`;
     return this.requestJson<VoiceCallOutcomeResponse>('PATCH', path, { action });
+  }
+
+  /**
+   * Stamps voiceLastContactedAt the moment a call is dispatched — before it
+   * completes — so GullyNest's own contactedBefore filter excludes an
+   * in-flight property immediately instead of waiting for reportCallOutcome.
+   */
+  async markContacted(propertyId: string): Promise<VoiceMarkContactedResponse> {
+    const encoded = encodeURIComponent(propertyId);
+    const path = `/api/voice-admin/properties/${encoded}/mark-contacted`;
+    return this.requestJson<VoiceMarkContactedResponse>('PATCH', path);
   }
 
   private async requestJson<T>(

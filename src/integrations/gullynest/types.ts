@@ -57,6 +57,14 @@ export interface VoiceCallOutcomeResponse {
   };
 }
 
+export interface VoiceMarkContactedResponse {
+  ok: true;
+  property: {
+    id: string;
+    voiceLastContactedAt: string;
+  };
+}
+
 export interface GullyNestClientConfig {
   baseUrl: string;
   apiSecret: string;

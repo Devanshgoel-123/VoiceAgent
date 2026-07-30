@@ -37,6 +37,12 @@ const settings = (): Settings => ({
   databaseUrl: 'postgresql://example',
 });
 
+const settingsWithGullyNest = (): Settings => ({
+  ...settings(),
+  voiceAgentApiBaseUrl: 'https://example.com',
+  voiceAgentApiSecret: 'secret-123',
+});
+
 describe('secureDispatchPropertyAvailabilityCall', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -301,5 +307,116 @@ describe('secureDispatchPropertyAvailabilityCall', () => {
       expect(outcome.failure.kind).toBe('conflict');
     }
     expect(dispatcher.dispatchPropertyAvailabilityCall).not.toHaveBeenCalled();
+  });
+
+  it('marks the property as contacted on GullyNest after a successful dispatch', async () => {
+    const reserveDispatchSlot = vi.fn(async () => ({ jobId: 'job-1' }));
+
+    vi.doMock('../src/db/call-log-repository.js', () => ({
+      isDatabaseEnabled: () => true,
+      ReserveDispatchError,
+      getCallLogRepository: () => ({
+        isPhoneSuppressed: vi.fn(async () => false),
+        reserveDispatchSlot,
+        attachDispatch: vi.fn(),
+        releaseReservation: vi.fn(),
+      }),
+    }));
+
+    const markContacted = vi.fn(async () => ({
+      ok: true as const,
+      property: { id: 'P1', voiceLastContactedAt: new Date().toISOString() },
+    }));
+    vi.doMock('../src/integrations/gullynest/client.js', () => ({
+      createGullyNestClientFromSettings: () => ({ markContacted }),
+    }));
+
+    const { secureDispatchPropertyAvailabilityCall } = await import(
+      '../src/jobs/dispatch-pipeline.js'
+    );
+
+    const job = createPropertyAvailabilityJob({
+      jobId: 'job-1',
+      owner: { name: 'Ramesh', phoneNumber: '+919876543210' },
+      property: { propertyId: 'P1', address: '42 Indiranagar' },
+    });
+
+    const dispatcher = {
+      dispatchPropertyAvailabilityCall: vi.fn(async () => ({
+        jobId: 'job-1',
+        status: 'dispatched' as const,
+        roomName: 'room-1',
+        dispatchId: 'dispatch-1',
+        agentName: 'test-agent',
+        phoneNumber: '+919876543210',
+      })),
+    };
+
+    const outcome = await secureDispatchPropertyAvailabilityCall(
+      job,
+      settingsWithGullyNest(),
+      dispatcher as never,
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(markContacted).toHaveBeenCalledWith('P1');
+  });
+
+  it('does not fail the dispatch when marking as contacted on GullyNest fails', async () => {
+    const reserveDispatchSlot = vi.fn(async () => ({ jobId: 'job-1' }));
+
+    vi.doMock('../src/db/call-log-repository.js', () => ({
+      isDatabaseEnabled: () => true,
+      ReserveDispatchError,
+      getCallLogRepository: () => ({
+        isPhoneSuppressed: vi.fn(async () => false),
+        reserveDispatchSlot,
+        attachDispatch: vi.fn(),
+        releaseReservation: vi.fn(),
+      }),
+    }));
+
+    const markContacted = vi.fn(async () => {
+      throw new Error('network error');
+    });
+    vi.doMock('../src/integrations/gullynest/client.js', () => ({
+      createGullyNestClientFromSettings: () => ({ markContacted }),
+    }));
+
+    const { secureDispatchPropertyAvailabilityCall } = await import(
+      '../src/jobs/dispatch-pipeline.js'
+    );
+
+    const job = createPropertyAvailabilityJob({
+      jobId: 'job-1',
+      owner: { name: 'Ramesh', phoneNumber: '+919876543210' },
+      property: { propertyId: 'P1', address: '42 Indiranagar' },
+    });
+
+    const dispatcher = {
+      dispatchPropertyAvailabilityCall: vi.fn(async () => ({
+        jobId: 'job-1',
+        status: 'dispatched' as const,
+        roomName: 'room-1',
+        dispatchId: 'dispatch-1',
+        agentName: 'test-agent',
+        phoneNumber: '+919876543210',
+      })),
+    };
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const outcome = await secureDispatchPropertyAvailabilityCall(
+        job,
+        settingsWithGullyNest(),
+        dispatcher as never,
+      );
+
+      expect(outcome.ok).toBe(true);
+      expect(markContacted).toHaveBeenCalledWith('P1');
+      expect(warnSpy).toHaveBeenCalledOnce();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
