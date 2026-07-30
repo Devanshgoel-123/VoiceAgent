@@ -13,6 +13,8 @@ export const TURN_COMMIT_FALLBACK_MS = 1500;
 export const OWNER_RESPONSE_TIMEOUT_MS = 30_000;
 /** Default minimum gap between dials to the same property or phone number (7 days). */
 export const DEFAULT_DISPATCH_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+/** Minimum pause between consecutive outbound dials in a voice-cron batch (3 minutes). */
+export const DEFAULT_DISPATCH_SPACING_MS = 3 * 60 * 1000;
 /** Skip GullyNest properties voice-contacted within this window. */
 export const VOICE_RECONTACT_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 /**

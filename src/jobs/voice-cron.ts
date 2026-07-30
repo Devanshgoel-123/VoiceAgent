@@ -57,6 +57,8 @@ export interface VoiceCronDeps {
    * cooldown conflict. Does not skip the already-active-call conflict check.
    */
   forced?: boolean;
+  /** Test override for the pause between dials (defaults to real setTimeout). */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface VoiceCronItemResult {
@@ -101,6 +103,11 @@ function logCronItem(item: VoiceCronItemResult): void {
   } else {
     console.log(JSON.stringify(payload));
   }
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function propertyToJobInput(
@@ -297,6 +304,10 @@ export async function runVoiceCronTick(
   /** Same owner can list multiple properties — dispatch at most one call per phone per tick;
    *  the rest queue for a later tick instead of ringing the same person back-to-back. */
   const dispatchedPhones = new Set<string>();
+  /** Successful dials this tick — used to space SIP attempts for trunk rate limits. */
+  let dialsThisTick = 0;
+  const sleep = deps?.sleep ?? defaultSleep;
+  const spacingMs = settings.dispatchSpacingMs;
 
   // Status/listingKind/cooldown are already enforced by fetchCallableVoiceProperties's
   // own filter above — `properties` never contains a row that would fail them, so
@@ -348,9 +359,21 @@ export async function runVoiceCronTick(
       continue;
     }
 
+    if (dialsThisTick > 0 && spacingMs > 0) {
+      console.log(
+        JSON.stringify({
+          event: 'voice_cron_dispatch_spacing',
+          waitMs: spacingMs,
+          previousDials: dialsThisTick,
+        }),
+      );
+      await sleep(spacingMs);
+    }
+
     const job = createPropertyAvailabilityJob(input);
     try {
       const outcome = await dispatch(job, settings, { forced: deps?.forced });
+      dialsThisTick += 1;
       if (!outcome.ok) {
         record({
           propertyId: property.id,
@@ -369,6 +392,7 @@ export async function runVoiceCronTick(
         jobId: outcome.result.jobId,
       });
     } catch (error) {
+      dialsThisTick += 1;
       record({
         propertyId: property.id,
         phoneNumber: job.owner.phoneNumber,

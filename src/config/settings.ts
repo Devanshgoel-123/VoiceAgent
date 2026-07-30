@@ -1,5 +1,8 @@
 import 'dotenv/config';
-import { DEFAULT_DISPATCH_COOLDOWN_MS } from './call-config.js';
+import {
+  DEFAULT_DISPATCH_COOLDOWN_MS,
+  DEFAULT_DISPATCH_SPACING_MS,
+} from './call-config.js';
 
 export type TtsProvider = 'sarvam' | 'elevenlabs';
 export type ElevenLabsTransport = 'http' | 'websocket';
@@ -33,6 +36,11 @@ export interface Settings {
   defaultLanguage: SupportedLanguage;
   telephonySampleRate: number;
   dispatchCooldownMs: number;
+  /**
+   * Pause between consecutive outbound dials in a voice-cron batch.
+   * Protects SIP trunk rate limits (e.g. Vobiz). Set 0 to disable.
+   */
+  dispatchSpacingMs: number;
   callingHoursStartHour: number;
   callingHoursEndHour: number;
   callingHoursTimeZone: string;
@@ -108,6 +116,14 @@ function parsePositiveInt(raw: string | undefined, fallback: number): number {
   return Math.floor(parsed);
 }
 
+/** Like parsePositiveInt but allows 0 (used to disable spacing in tests/dev). */
+function parseNonNegativeInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.floor(parsed);
+}
+
 let cachedSettings: Settings | null = null;
 
 export function getSettings(): Settings {
@@ -153,6 +169,10 @@ export function getSettings(): Settings {
     dispatchCooldownMs: parsePositiveInt(
       process.env.DISPATCH_COOLDOWN_MS,
       DEFAULT_DISPATCH_COOLDOWN_MS,
+    ),
+    dispatchSpacingMs: parseNonNegativeInt(
+      process.env.DISPATCH_SPACING_MS,
+      DEFAULT_DISPATCH_SPACING_MS,
     ),
     callingHoursStartHour: parsePositiveInt(process.env.CALLING_HOURS_START_HOUR, 9),
     callingHoursEndHour: parsePositiveInt(process.env.CALLING_HOURS_END_HOUR, 20),

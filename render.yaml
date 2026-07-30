@@ -85,6 +85,8 @@ envVarGroups:
         value: "900000"
       - key: DISPATCH_COOLDOWN_MS
         value: "604800000"
+      - key: DISPATCH_SPACING_MS
+        value: "180000"
       - key: CALLING_HOURS_START_HOUR
         value: "9"
       - key: CALLING_HOURS_END_HOUR

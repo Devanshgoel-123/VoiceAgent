@@ -25,6 +25,7 @@ const settings = (): Settings => ({
   defaultLanguage: 'en-IN',
   telephonySampleRate: 8000,
   dispatchCooldownMs: 7 * 24 * 60 * 60 * 1000,
+  dispatchSpacingMs: 0,
   callingHoursStartHour: 0,
   callingHoursEndHour: 24,
   callingHoursTimeZone: 'UTC',

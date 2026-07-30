@@ -275,6 +275,7 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     defaultLanguage: 'en-IN',
     telephonySampleRate: 8000,
     dispatchCooldownMs: 7 * 24 * 60 * 60 * 1000,
+    dispatchSpacingMs: 0,
     callingHoursStartHour: 0,
     callingHoursEndHour: 24,
     callingHoursTimeZone: 'UTC',
@@ -572,6 +573,78 @@ describe('runVoiceCronTick', () => {
     expect(summary.items.some((i) => i.propertyId === 'a' && i.status === 'skipped')).toBe(
       true,
     );
+  });
+
+  it('waits dispatchSpacingMs between dials in a batch', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'b', shortId: '1', listerPhone: '+919111111111' }),
+      property({
+        id: 'c',
+        shortId: '2',
+        listerPhone: '+919222222222',
+        listerName: 'Sita',
+      }),
+    ]);
+    const dispatch = vi.fn(async (job) => ({
+      ok: true as const,
+      result: {
+        jobId: job.jobId,
+        status: 'dispatched' as const,
+        roomName: 'room',
+        dispatchId: 'd1',
+        agentName: 'test-agent',
+        phoneNumber: job.owner.phoneNumber,
+      },
+    }));
+    const sleep = vi.fn(async () => {});
+
+    await runVoiceCronTick(baseSettings({ dispatchSpacingMs: 180_000 }), {
+      client: { listAllProperties } as never,
+      dispatch,
+      sleep,
+      now,
+      ...LISTING_DATE_RANGE,
+    });
+
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(180_000);
+  });
+
+  it('does not wait between dials when dispatchSpacingMs is 0', async () => {
+    const now = new Date('2026-07-27T12:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'b', shortId: '1', listerPhone: '+919111111111' }),
+      property({
+        id: 'c',
+        shortId: '2',
+        listerPhone: '+919222222222',
+      }),
+    ]);
+    const dispatch = vi.fn(async (job) => ({
+      ok: true as const,
+      result: {
+        jobId: job.jobId,
+        status: 'dispatched' as const,
+        roomName: 'room',
+        dispatchId: 'd1',
+        agentName: 'test-agent',
+        phoneNumber: job.owner.phoneNumber,
+      },
+    }));
+    const sleep = vi.fn(async () => {});
+
+    await runVoiceCronTick(baseSettings({ dispatchSpacingMs: 0 }), {
+      client: { listAllProperties } as never,
+      dispatch,
+      sleep,
+      now,
+      ...LISTING_DATE_RANGE,
+    });
+
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it('logs one line per property with propertyId, status, and reason (dispatched/skipped/failed)', async () => {
