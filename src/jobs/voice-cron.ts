@@ -4,6 +4,7 @@ import {
   VOICE_RECONTACT_COOLDOWN_MS,
 } from '../config/call-config.js';
 import type { Settings } from '../config/settings.js';
+import { isE164Phone } from '../core/phone.js';
 import {
   getCallLogRepository,
   isDatabaseEnabled,
@@ -309,6 +310,18 @@ export async function runVoiceCronTick(
         phoneNumber: property.listerPhone ?? undefined,
         status: 'skipped',
         reason: 'missing_phone_or_address',
+      });
+      continue;
+    }
+
+    // GullyNest falls back to the linked user's phone, which isn't always
+    // formatted. Suppression and the per-tick dedupe match exact strings, so an
+    // unformatted number could slip past both: skip it rather than guess.
+    if (!isE164Phone(input.owner.phoneNumber)) {
+      record({
+        propertyId: property.id,
+        status: 'skipped',
+        reason: 'invalid_phone',
       });
       continue;
     }
