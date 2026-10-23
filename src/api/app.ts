@@ -154,72 +154,82 @@ export function createApp(
   );
 
   app.get('/calls/results/:jobId', requireApiKey, callReadLimiter, async (req, res) => {
-    if (isDatabaseEnabled()) {
-      const row = await getCallLogRepository().getByJobId(req.params.jobId);
-      if (row) {
-        res.json({
-          jobId: row.jobId,
-          status: row.status,
-          propertyStillAvailable:
-            row.ownerOutcome === 'yes' || row.ownerOutcome === 'no'
-              ? row.ownerOutcome
-              : row.ownerOutcome === 'unclear'
-                ? 'unclear'
-                : 'not_asked',
-          conversationLanguage: row.languages[0],
-          languagesUsed: row.languages,
-          ownerOutcome: row.ownerOutcome,
-          success: row.success,
-          answered: row.answered,
-          transcript: row.transcript,
-          transcriptSummary: row.transcriptSummary,
-          rawMetadata: row.metadata,
-          completedAt: row.completedAt?.toISOString(),
-        });
+    try {
+      if (isDatabaseEnabled()) {
+        const row = await getCallLogRepository().getByJobId(req.params.jobId);
+        if (row) {
+          res.json({
+            jobId: row.jobId,
+            status: row.status,
+            propertyStillAvailable:
+              row.ownerOutcome === 'yes' || row.ownerOutcome === 'no'
+                ? row.ownerOutcome
+                : row.ownerOutcome === 'unclear'
+                  ? 'unclear'
+                  : 'not_asked',
+            conversationLanguage: row.languages[0],
+            languagesUsed: row.languages,
+            ownerOutcome: row.ownerOutcome,
+            success: row.success,
+            answered: row.answered,
+            transcript: row.transcript,
+            transcriptSummary: row.transcriptSummary,
+            rawMetadata: row.metadata,
+            completedAt: row.completedAt?.toISOString(),
+          });
+          return;
+        }
+      }
+
+      const result = await resultStore.load(req.params.jobId);
+      if (!result) {
+        res.status(404).json({ error: `No result found for job ${req.params.jobId}` });
         return;
       }
+      res.json(result);
+    } catch (error) {
+      console.error('Failed to load call result:', error);
+      res.status(500).json({ error: 'Failed to load call result' });
     }
-
-    const result = await resultStore.load(req.params.jobId);
-    if (!result) {
-      res.status(404).json({ error: `No result found for job ${req.params.jobId}` });
-      return;
-    }
-    res.json(result);
   });
 
   app.get('/calls/results', requireApiKey, callReadLimiter, async (_req, res) => {
-    if (isDatabaseEnabled()) {
-      const rows = await getCallLogRepository().listRecent(100);
+    try {
+      if (isDatabaseEnabled()) {
+        const rows = await getCallLogRepository().listRecent(100);
+        res.json(
+          rows.map((row) => ({
+            jobId: row.jobId,
+            status: row.status,
+            ownerOutcome: row.ownerOutcome,
+            success: row.success,
+            answered: row.answered,
+            languagesUsed: row.languages,
+            transcriptSummary: row.transcriptSummary,
+            propertyId: row.propertyId,
+            completedAt: row.completedAt?.toISOString(),
+          })),
+        );
+        return;
+      }
+
+      const results = await resultStore.listResults();
       res.json(
-        rows.map((row) => ({
+        results.map((row) => ({
           jobId: row.jobId,
           status: row.status,
           ownerOutcome: row.ownerOutcome,
           success: row.success,
           answered: row.answered,
-          languagesUsed: row.languages,
+          languagesUsed: row.languagesUsed,
           transcriptSummary: row.transcriptSummary,
-          propertyId: row.propertyId,
-          completedAt: row.completedAt?.toISOString(),
+          completedAt: row.completedAt,
         })),
       );
-      return;
+    } catch (error) {
+      console.error('Failed to list call results:', error);
+      res.status(500).json({ error: 'Failed to list call results' });
     }
-
-    const results = await resultStore.listResults();
-    res.json(
-      results.map((row) => ({
-        jobId: row.jobId,
-        status: row.status,
-        ownerOutcome: row.ownerOutcome,
-        success: row.success,
-        answered: row.answered,
-        languagesUsed: row.languagesUsed,
-        transcriptSummary: row.transcriptSummary,
-        completedAt: row.completedAt,
-      })),
-    );
   });
 
   return app;
