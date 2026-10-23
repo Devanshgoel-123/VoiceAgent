@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, desc, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { callWarn } from '../core/call-logger.js';
 import { maskPhone } from '../core/phone.js';
 import type {
@@ -71,54 +71,6 @@ export class ReserveDispatchError extends Error {
 }
 
 export class CallLogRepository {
-  async upsertDispatched(
-    job: PropertyAvailabilityCallJob,
-    dispatch: DispatchResult,
-  ): Promise<void> {
-    if (!isDatabaseEnabled()) return;
-
-    const db = getDb();
-    const now = new Date();
-    const base = emptyTranscriptDefaults();
-
-    await db
-      .insert(callLogs)
-      .values({
-        jobId: job.jobId,
-        direction: 'outbound',
-        status: 'dispatched',
-        ownerOutcome: 'not_asked',
-        success: false,
-        answered: false,
-        phoneNumber: job.owner.phoneNumber,
-        ownerName: job.owner.name,
-        propertyId: job.property.propertyId,
-        propertyAddress: job.property.address,
-        callerName: job.callerName,
-        companyName: job.companyName,
-        roomName: dispatch.roomName,
-        dispatchId: dispatch.dispatchId,
-        languages: base.languages,
-        transcript: base.transcript,
-        metadata: {
-          ...(job.metadata ?? {}),
-          job_type: 'property_availability',
-          preferred_language: job.preferredLanguage,
-        },
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onConflictDoUpdate({
-        target: callLogs.jobId,
-        set: {
-          status: 'dispatched',
-          roomName: dispatch.roomName,
-          dispatchId: dispatch.dispatchId,
-          updatedAt: now,
-        },
-      });
-  }
-
   /**
    * Atomically reserve a (property_id, phone_number) slot under an advisory lock.
    * Inserts a pending row. Caller must attach dispatch metadata or mark failed.
@@ -406,49 +358,6 @@ export class CallLogRepository {
     return updated.length;
   }
 
-  /** Legacy non-atomic check — prefer reserveDispatchSlot for production dispatch. */
-  async findBlockingDispatch(input: {
-    propertyId: string;
-    phoneNumber: string;
-    cooldownMs: number;
-  }): Promise<CallLogRow | null> {
-    if (!isDatabaseEnabled()) return null;
-
-    const db = getDb();
-    const activeRows = await db
-      .select()
-      .from(callLogs)
-      .where(
-        and(
-          inArray(callLogs.status, [...ACTIVE_STATUSES]),
-          or(
-            and(
-              eq(callLogs.propertyId, input.propertyId),
-              eq(callLogs.phoneNumber, input.phoneNumber),
-            ),
-          ),
-        ),
-      )
-      .limit(1);
-
-    if (activeRows[0]) return activeRows[0];
-
-    const cutoff = new Date(Date.now() - input.cooldownMs);
-    const recentRows = await db
-      .select()
-      .from(callLogs)
-      .where(
-        and(
-          gte(callLogs.createdAt, cutoff),
-          eq(callLogs.propertyId, input.propertyId),
-          eq(callLogs.phoneNumber, input.phoneNumber),
-        ),
-      )
-      .limit(1);
-
-    return recentRows[0] ?? null;
-  }
-
   async isPhoneSuppressed(phoneNumber: string): Promise<boolean> {
     if (!isDatabaseEnabled()) return false;
 
@@ -520,32 +429,6 @@ export async function safeMarkCallFailed(jobId: string, summary: string): Promis
     await getCallLogRepository().markFailed(jobId, summary);
   } catch (error) {
     callWarn(`[CALL] call_log.failed_fail job=${jobId} error=${error}`);
-  }
-}
-
-export async function safeFindBlockingDispatch(input: {
-  propertyId: string;
-  phoneNumber: string;
-  cooldownMs: number;
-}): Promise<CallLogRow | null> {
-  try {
-    return await getCallLogRepository().findBlockingDispatch(input);
-  } catch (error) {
-    callWarn(
-      `[CALL] call_log.dedupe_fail property=${input.propertyId} phone=${input.phoneNumber} error=${error}`,
-    );
-    return null;
-  }
-}
-
-export async function safeUpsertDispatched(
-  job: PropertyAvailabilityCallJob,
-  dispatch: DispatchResult,
-): Promise<void> {
-  try {
-    await getCallLogRepository().upsertDispatched(job, dispatch);
-  } catch (error) {
-    callWarn(`[CALL] call_log.dispatch_fail job=${job.jobId} error=${error}`);
   }
 }
 
