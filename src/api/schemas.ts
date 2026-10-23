@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { E164_PHONE_RE } from '../core/phone.js';
 
 const e164Phone = z
   .string()
   .trim()
-  .regex(/^\+[1-9]\d{7,14}$/, 'phone_number must be E.164 (e.g. +919876543210)');
+  .regex(E164_PHONE_RE, 'phone_number must be E.164 (e.g. +919876543210)');
 
 export const propertyAvailabilityRequestSchema = z.object({
   owner_name: z.string().trim().min(1),

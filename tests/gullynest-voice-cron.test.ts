@@ -730,6 +730,44 @@ describe('runVoiceCronTick', () => {
     expect(dispatch).toHaveBeenCalledOnce();
   });
 
+  it('skips a lister phone that is not E.164 instead of dialing it', async () => {
+    const now = new Date('2026-07-27T06:00:00.000Z');
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'bare-digits', listerPhone: '9876543210' }),
+      property({ id: 'spaced', listerPhone: '+91 98765 43210' }),
+      property({ id: 'ok', listerPhone: '+919876543210' }),
+    ]);
+    const dispatch = vi.fn(async (job) => ({
+      ok: true as const,
+      result: {
+        jobId: job.jobId,
+        status: 'dispatched' as const,
+        roomName: 'room',
+        dispatchId: 'd1',
+        agentName: 'test-agent',
+        phoneNumber: job.owner.phoneNumber,
+      },
+    }));
+
+    const summary = await runVoiceCronTick(baseSettings(), {
+      client: { listAllProperties } as never,
+      dispatch,
+      now,
+      ...LISTING_DATE_RANGE,
+    });
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(summary.items).toContainEqual(
+      expect.objectContaining({ propertyId: 'bare-digits', status: 'skipped', reason: 'invalid_phone' }),
+    );
+    expect(summary.items).toContainEqual(
+      expect.objectContaining({ propertyId: 'spaced', status: 'skipped', reason: 'invalid_phone' }),
+    );
+    expect(summary.items).toContainEqual(
+      expect.objectContaining({ propertyId: 'ok', status: 'dispatched' }),
+    );
+  });
+
   it('queues later properties for the same listerPhone instead of dispatching them concurrently', async () => {
     const now = new Date('2026-07-27T12:00:00.000Z');
     const listAllProperties = vi.fn(async () => [
