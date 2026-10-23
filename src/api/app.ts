@@ -96,13 +96,11 @@ export function createApp(
             ? { tts_provider: body.tts_provider }
             : {},
       });
-      console.log('job', job);
       const outcome = await secureDispatchPropertyAvailabilityCall(
         job,
         settings,
         dispatcher,
       );
-      console.log('outcome', outcome);
       if (!outcome.ok) {
         const { failure } = outcome;
         if (failure.kind === 'compliance') {
