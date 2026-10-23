@@ -1,7 +1,10 @@
 import { log } from '@livekit/agents';
 import { callInfo, callWarn } from '../core/call-logger.js';
 import type { Settings } from '../config/settings.js';
-import { safeCompleteCallLog } from '../db/call-log-repository.js';
+import {
+  safeAddPhoneSuppression,
+  safeCompleteCallLog,
+} from '../db/call-log-repository.js';
 import { createGullyNestClientFromSettings } from '../integrations/gullynest/client.js';
 import {
   mapSnapshotToCallOutcomeAction,
@@ -26,6 +29,21 @@ export async function persistCallResult(
   logger?: LiveKitLogger,
 ): Promise<void> {
   await safeCompleteCallLog(snapshot);
+
+  // The closing script promises an opted-out owner we won't call again. An opt-out
+  // reports soft_stale, which the cron still dials after the recontact cooldown,
+  // so the suppression list is what actually keeps that promise.
+  if (snapshot.metadata.do_not_call === true && snapshot.phoneNumber) {
+    const ownerRequest = String(snapshot.metadata.do_not_call_reason ?? '').trim();
+    await safeAddPhoneSuppression(
+      snapshot.phoneNumber,
+      `Owner asked not to be called again (job ${snapshot.jobId})${
+        ownerRequest ? `: ${ownerRequest}` : ''
+      }`.slice(0, 500),
+    );
+    callInfo(`opt-out: number suppressed job=${snapshot.jobId}`, logger);
+  }
+
   try {
     await saveCallResultSnapshot(snapshot);
   } catch (error) {

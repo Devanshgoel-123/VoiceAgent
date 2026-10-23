@@ -4,11 +4,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // dry-run mode in voice-cron.ts calls isDatabaseEnabled/getCallLogRepository().isPhoneSuppressed —
 // mock the DB layer so these tests never touch a real database (this repo's .env loads a real
 // DATABASE_URL via dotenv/config, imported transitively through settings.ts).
-const { isPhoneSuppressedMock } = vi.hoisted(() => ({
+const { isPhoneSuppressedMock, safeAddPhoneSuppressionMock } = vi.hoisted(() => ({
   isPhoneSuppressedMock: vi.fn(async () => false),
+  safeAddPhoneSuppressionMock: vi.fn(async () => {}),
 }));
 vi.mock('../src/db/call-log-repository.js', () => ({
   safeCompleteCallLog: vi.fn(async () => {}),
+  safeAddPhoneSuppression: safeAddPhoneSuppressionMock,
   isDatabaseEnabled: () => true,
   getCallLogRepository: () => ({
     isPhoneSuppressed: isPhoneSuppressedMock,
@@ -1149,5 +1151,36 @@ describe('persistCallResult (GullyNest outcome reporting)', () => {
     );
 
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('suppresses the number when the owner asked not to be called again', async () => {
+    stubOutcomeFetch();
+    safeAddPhoneSuppressionMock.mockClear();
+
+    await persistCallResult(
+      snapshot({
+        ownerOutcome: 'other',
+        metadata: { do_not_call: true, do_not_call_reason: 'please stop calling me' },
+      }),
+      gullyNestSettings(),
+    );
+
+    expect(safeAddPhoneSuppressionMock).toHaveBeenCalledOnce();
+    const [phone, reason] = safeAddPhoneSuppressionMock.mock.calls[0]! as unknown as [
+      string,
+      string,
+    ];
+    expect(phone).toBe('+919876543210');
+    expect(reason).toContain('job-1');
+    expect(reason).toContain('please stop calling me');
+  });
+
+  it('does not suppress the number for an ordinary outcome', async () => {
+    stubOutcomeFetch();
+    safeAddPhoneSuppressionMock.mockClear();
+
+    await persistCallResult(snapshot({ ownerOutcome: 'no' }), gullyNestSettings());
+
+    expect(safeAddPhoneSuppressionMock).not.toHaveBeenCalled();
   });
 });
