@@ -35,7 +35,10 @@ export const callLogs = pgTable('call_logs', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
-/** Read-only local block list populated only by external API callers. */
+/**
+ * Numbers that must never be dialled. Written by POST /suppressed-numbers and
+ * when an owner asks on a call not to be called again.
+ */
 export const suppressedNumbers = pgTable(
   'suppressed_numbers',
   {
