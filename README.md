@@ -423,6 +423,7 @@ Each call is tracked in `call_logs` with:
 | `API_SECRET_KEY` | Yes (API) | Bearer / `x-api-key` secret for `/calls/*` and `POST /suppressed-numbers` |
 | `API_READ_RATE_LIMIT_PER_MINUTE` | No | Per-IP limit for `GET /calls/results*` (default `60`/min) |
 | `API_SUPPRESSION_WRITE_RATE_LIMIT_PER_MINUTE` | No | Per-IP limit for `POST /suppressed-numbers` (default `10`/min) |
+| `API_DISPATCH_RATE_LIMIT_PER_MINUTE` | No | Per-IP limit for `POST /calls/property-availability` (default `30`/min) |
 | `DISPATCH_COOLDOWN_MS` | No | Min ms between same property+phone (default 7d) |
 | `CALLING_HOURS_START_HOUR` / `CALLING_HOURS_END_HOUR` | No | Quiet-hours window (default 9–20) |
 | `CALLING_HOURS_TZ` | No | Time zone for calling hours (default `Asia/Kolkata`) |

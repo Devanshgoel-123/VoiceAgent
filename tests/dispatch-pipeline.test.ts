@@ -31,6 +31,7 @@ const settings = (): Settings => ({
   callDataRetentionDays: 15,
   apiReadRateLimitPerMinute: 60,
   apiSuppressionWriteRateLimitPerMinute: 10,
+  apiDispatchRateLimitPerMinute: 30,
   voiceCronIntervalMs: 900_000,
   appEnv: 'developer',
   callDebugLogging: false,
