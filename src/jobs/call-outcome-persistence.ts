@@ -16,6 +16,21 @@ import { purgeExpiredCallData } from './retention.js';
 
 type LiveKitLogger = ReturnType<typeof log>;
 
+/** Retention is measured in days; sweeping after every call is wasted work. */
+export const RETENTION_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
+/** Returns true at most once per interval (the first call always passes). */
+export function createIntervalGate(intervalMs: number): (now?: number) => boolean {
+  let lastRunAt: number | undefined;
+  return (now = Date.now()) => {
+    if (lastRunAt !== undefined && now - lastRunAt < intervalMs) return false;
+    lastRunAt = now;
+    return true;
+  };
+}
+
+const shouldRunRetentionSweep = createIntervalGate(RETENTION_SWEEP_INTERVAL_MS);
+
 /**
  * Persists a call's final outcome: DB row, JSON snapshot, GullyNest outcome report
  * (when applicable), and a best-effort retention sweep. Called for every terminal
@@ -67,8 +82,11 @@ export async function persistCallResult(
     }
   }
 
-  // Best-effort retention sweep (also run via `npm run db:purge-expired`).
-  void purgeExpiredCallData(settings.callDataRetentionDays).catch((error) => {
-    callWarn(`retention purge failed: ${error}`, logger);
-  });
+  // Best-effort retention sweep, at most hourly per process (also run via
+  // `npm run db:purge-expired`).
+  if (shouldRunRetentionSweep()) {
+    void purgeExpiredCallData(settings.callDataRetentionDays).catch((error) => {
+      callWarn(`retention purge failed: ${error}`, logger);
+    });
+  }
 }

@@ -29,7 +29,10 @@ import {
   mapSnapshotToCallOutcomeAction,
   shouldReportCallOutcome,
 } from '../src/integrations/gullynest/outcome-map.js';
-import { persistCallResult } from '../src/jobs/call-outcome-persistence.js';
+import {
+  createIntervalGate,
+  persistCallResult,
+} from '../src/jobs/call-outcome-persistence.js';
 import type { CallLogSnapshot } from '../src/jobs/call-log-types.js';
 import { createPropertyAvailabilityJob } from '../src/jobs/models.js';
 import type { Settings } from '../src/config/settings.js';
@@ -1249,5 +1252,16 @@ describe('persistCallResult (GullyNest outcome reporting)', () => {
     await persistCallResult(snapshot({ ownerOutcome: 'no' }), gullyNestSettings());
 
     expect(safeAddPhoneSuppressionMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('createIntervalGate (retention sweep throttle)', () => {
+  it('passes the first call, then at most once per interval', () => {
+    const gate = createIntervalGate(1_000);
+    expect(gate(10_000)).toBe(true);
+    expect(gate(10_500)).toBe(false);
+    expect(gate(10_999)).toBe(false);
+    expect(gate(11_000)).toBe(true);
+    expect(gate(11_001)).toBe(false);
   });
 });
