@@ -5,6 +5,22 @@ Calls property owners in **English, Hindi, or Kannada** and asks **one question*
 
 Built with **TypeScript**, **LiveKit Agents (Node.js)**, **Twilio SIP** (PSTN), **Sarvam AI** (Saaras STT + Sarvam LLM), and selectable **Sarvam or ElevenLabs TTS**.
 
+[![CI](https://github.com/Devanshgoel-123/VoiceAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/Devanshgoel-123/VoiceAgent/actions/workflows/ci.yml)
+
+## Who built what
+
+A two-person project for GullyNest.
+
+- **Devansh Goel:** the voice agent and call runtime: the LiveKit call session (opening, turn commits, scripted closings, hangup), the property-availability agent and prompts, mid-call language switching across English, Hindi and Kannada, the Sarvam/ElevenLabs pipeline, the worker, the HTTP API with auth and rate limits, the atomic dispatch lock, quiet hours, the suppression list, and the GullyNest integration.
+- **Neelkanth Tandel:** the Render deployment, the voice cron's date-range and targeted-property modes, the database bootstrap script, marking a property contacted at dispatch (`markContacted`), and not reporting outcomes for unanswered calls.
+
+### Problems worth asking about
+
+- **Duplicate calls.** Two requests for the same owner could both dial. Dispatch now takes a Postgres advisory lock on (property, phone) and checks for an active or recent call inside the same transaction (`reserveDispatchSlot`).
+- **Latency on a phone line.** Clear "yes"/"no" answers skip the LLM entirely and play a scripted closing, and the opening is pre-written TTS rather than an LLM turn.
+- **Language flipping mid-call.** STT language hints are noisy, so the agent switches only on strong evidence or two turns in a row in the new language (`LanguageManager`).
+- **Keeping the "we won't call again" promise.** An opted-out owner was being redialled after the 7-day window; opt-outs now go on the suppression list that every dispatch checks.
+
 ---
 
 ## Overview
