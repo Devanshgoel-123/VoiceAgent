@@ -252,6 +252,32 @@ describe('API server', () => {
     expect(limited.headers['ratelimit-limit']).toBe('2');
   });
 
+  it('returns 500 instead of hanging when listing results fails', async () => {
+    mockListRecent.mockRejectedValueOnce(new Error('connection terminated'));
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings());
+
+    const response = await request(app)
+      .get('/calls/results')
+      .set('Authorization', 'Bearer test-secret');
+
+    expect(response.status).toBe(500);
+    expect(response.body.error).toBe('Failed to list call results');
+  });
+
+  it('returns 500 instead of hanging when loading one result fails', async () => {
+    mockGetByJobId.mockRejectedValueOnce(new Error('connection terminated'));
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings());
+
+    const response = await request(app)
+      .get('/calls/results/job-1')
+      .set('Authorization', 'Bearer test-secret');
+
+    expect(response.status).toBe(500);
+    expect(response.body.error).toBe('Failed to load call result');
+  });
+
   it('requires auth for suppression writes', async () => {
     const { createApp } = await import('../src/api/app.js');
     const app = createApp(testSettings());

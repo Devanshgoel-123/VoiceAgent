@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { and, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
 import { callWarn } from '../core/call-logger.js';
 import type {
   CallLogSnapshot,
@@ -24,6 +24,19 @@ function emptyTranscriptDefaults(): {
 }
 
 const ACTIVE_STATUSES = ['pending', 'dispatched', 'in_progress'] as const;
+
+export type CallLogListRow = Pick<
+  CallLogRow,
+  | 'jobId'
+  | 'status'
+  | 'ownerOutcome'
+  | 'success'
+  | 'answered'
+  | 'languages'
+  | 'transcriptSummary'
+  | 'propertyId'
+  | 'completedAt'
+>;
 
 function advisoryLockKeys(propertyId: string, phoneNumber: string): [number, number] {
   const digest = createHash('sha256')
@@ -339,11 +352,26 @@ export class CallLogRepository {
     return rows[0] ?? null;
   }
 
-  async listRecent(limit = 50): Promise<CallLogRow[]> {
+  /** Newest calls first, without transcripts (the list view never shows them). */
+  async listRecent(limit = 50): Promise<CallLogListRow[]> {
     if (!isDatabaseEnabled()) return [];
 
     const db = getDb();
-    return db.select().from(callLogs).limit(limit);
+    return db
+      .select({
+        jobId: callLogs.jobId,
+        status: callLogs.status,
+        ownerOutcome: callLogs.ownerOutcome,
+        success: callLogs.success,
+        answered: callLogs.answered,
+        languages: callLogs.languages,
+        transcriptSummary: callLogs.transcriptSummary,
+        propertyId: callLogs.propertyId,
+        completedAt: callLogs.completedAt,
+      })
+      .from(callLogs)
+      .orderBy(desc(callLogs.createdAt))
+      .limit(limit);
   }
 
   /**
