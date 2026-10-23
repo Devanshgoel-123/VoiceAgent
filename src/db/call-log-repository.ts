@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { and, desc, eq, gte, inArray, lt, or, sql } from 'drizzle-orm';
 import { callWarn } from '../core/call-logger.js';
+import { maskPhone } from '../core/phone.js';
 import type {
   CallLogSnapshot,
   TranscriptEntry,
@@ -150,7 +151,6 @@ export class CallLogRepository {
           ),
         )
         .limit(1);
-      console.log('activeRows', activeRows);
       if (activeRows[0]) {
         throw new ReserveDispatchError(
           'conflict_active',
@@ -556,7 +556,7 @@ export async function safeAddPhoneSuppression(
   try {
     await getCallLogRepository().addPhoneSuppression(phoneNumber, reason);
   } catch (error) {
-    callWarn(`[CALL] suppression.add_fail phone=${phoneNumber} error=${error}`);
+    callWarn(`[CALL] suppression.add_fail phone=${maskPhone(phoneNumber)} error=${error}`);
   }
 }
 

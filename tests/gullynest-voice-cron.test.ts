@@ -39,6 +39,7 @@ import {
   isCallableVoiceStatus,
   propertyToJobInput,
   runVoiceCronTick,
+  startVoiceCronLoop,
   voiceContactedBeforeCutoff,
   wasContactedWithinCooldown,
 } from '../src/jobs/voice-cron.js';
@@ -729,6 +730,33 @@ describe('runVoiceCronTick', () => {
       phoneNumber: '+919222222222',
     });
     expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it('keeps owner phone numbers out of the long-running loop tick log', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const listAllProperties = vi.fn(async () => [
+      property({ id: 'p1', listerPhone: '+919876543210' }),
+    ]);
+    const handle = startVoiceCronLoop(baseSettings(), {
+      client: { listAllProperties } as never,
+      dryRun: true,
+      now: new Date('2026-07-27T06:00:00.000Z'),
+      ...LISTING_DATE_RANGE,
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(logSpy.mock.calls.some(([line]) => String(line).includes('tickAt'))).toBe(true);
+      });
+      const tickLine = logSpy.mock.calls
+        .map(([line]) => String(line))
+        .find((line) => line.includes('tickAt'))!;
+      expect(tickLine).toContain('"propertyId":"p1"');
+      expect(tickLine).not.toContain('9876543210');
+    } finally {
+      handle.stop();
+      logSpy.mockRestore();
+    }
   });
 
   it('skips a lister phone that is not E.164 instead of dialing it', async () => {

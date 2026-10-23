@@ -419,10 +419,12 @@ export function startVoiceCronLoop(
 
   const runTick = async (): Promise<void> => {
     const summary = await runVoiceCronTick(settings, deps);
+    // Same rule as logCronItem: owners' phone numbers stay out of the logs.
     console.log(
       JSON.stringify({
         tickAt: new Date().toISOString(),
         ...summary,
+        items: summary.items.map(({ phoneNumber: _phoneNumber, ...item }) => item),
       }),
     );
   };
