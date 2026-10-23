@@ -283,6 +283,7 @@ function baseSettings(overrides: Partial<Settings> = {}): Settings {
     callDataRetentionDays: 15,
     apiReadRateLimitPerMinute: 60,
     apiSuppressionWriteRateLimitPerMinute: 10,
+    apiDispatchRateLimitPerMinute: 30,
     voiceAgentApiBaseUrl: 'https://example.com',
     voiceAgentApiSecret: 'secret',
     voiceCronIntervalMs: 900_000,

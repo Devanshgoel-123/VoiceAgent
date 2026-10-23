@@ -42,6 +42,8 @@ export interface Settings {
   apiReadRateLimitPerMinute: number;
   /** Per-IP limit for POST /suppressed-numbers (per minute). */
   apiSuppressionWriteRateLimitPerMinute: number;
+  /** Per-IP limit for POST /calls/property-availability (per minute). */
+  apiDispatchRateLimitPerMinute: number;
   /** GullyNest marketplace base URL (optional; enables voice cron + outcome PATCH). */
   voiceAgentApiBaseUrl?: string;
   /** Shared secret for `X-Voice-Admin-Secret` (optional). */
@@ -165,6 +167,10 @@ export function getSettings(): Settings {
     apiSuppressionWriteRateLimitPerMinute: parsePositiveInt(
       process.env.API_SUPPRESSION_WRITE_RATE_LIMIT_PER_MINUTE,
       10,
+    ),
+    apiDispatchRateLimitPerMinute: parsePositiveInt(
+      process.env.API_DISPATCH_RATE_LIMIT_PER_MINUTE,
+      30,
     ),
     voiceAgentApiBaseUrl: process.env.VOICE_AGENT_API_BASE_URL?.trim() || undefined,
     voiceAgentApiSecret: process.env.VOICE_AGENT_API_SECRET?.trim() || undefined,

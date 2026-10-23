@@ -20,6 +20,7 @@ import { listAgents } from '../agents/registry.js';
 export interface CreateAppOptions {
   readRateLimitMax?: number;
   suppressionWriteRateLimitMax?: number;
+  dispatchRateLimitMax?: number;
 }
 
 export function createApp(
@@ -50,11 +51,20 @@ export function createApp(
     message: { error: 'Too many requests' },
   });
 
+  // Each request places a real phone call, so this is the limit that matters most.
+  const dispatchLimiter = rateLimit({
+    windowMs: 60_000,
+    max: options.dispatchRateLimitMax ?? settings.apiDispatchRateLimitPerMinute,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests' },
+  });
+
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', agents: listAgents() });
   });
 
-  app.post('/calls/property-availability', requireApiKey, async (req, res) => {
+  app.post('/calls/property-availability', requireApiKey, dispatchLimiter, async (req, res) => {
     try {
       const parsed = propertyAvailabilityRequestSchema.safeParse(req.body);
       if (!parsed.success) {

@@ -50,6 +50,7 @@ export function testSettings(overrides: Partial<Settings> = {}): Settings {
     callDataRetentionDays: 15,
     apiReadRateLimitPerMinute: 60,
     apiSuppressionWriteRateLimitPerMinute: 10,
+    apiDispatchRateLimitPerMinute: 30,
     voiceCronIntervalMs: 900_000,
     appEnv: 'developer',
     callDebugLogging: false,
@@ -276,6 +277,30 @@ describe('API server', () => {
 
     expect(response.status).toBe(500);
     expect(response.body.error).toBe('Failed to load call result');
+  });
+
+  it('rate limits dispatch requests', async () => {
+    const { createApp } = await import('../src/api/app.js');
+    const app = createApp(testSettings(), { dispatchRateLimitMax: 2 });
+
+    const post = () =>
+      request(app)
+        .post('/calls/property-availability')
+        .set('Authorization', 'Bearer test-secret')
+        .send({
+          owner_name: 'Ramesh',
+          phone_number: '+919876543210',
+          property_id: 'prop-1',
+          property_address: '42 MG Road',
+        });
+
+    expect((await post()).status).toBe(200);
+    expect((await post()).status).toBe(200);
+
+    const limited = await post();
+    expect(limited.status).toBe(429);
+    expect(limited.body.error).toBe('Too many requests');
+    expect(mockSecureDispatch).toHaveBeenCalledTimes(2);
   });
 
   it('requires auth for suppression writes', async () => {
